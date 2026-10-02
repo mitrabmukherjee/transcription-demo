@@ -10,6 +10,8 @@ import { ResultsTabs } from "@/components/ResultsTabs";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { TranscriptionOptions, TranscriptionResponse } from "@/lib/types";
+import type { BlobUploadMode } from "@/lib/upload-media";
+import { uploadMediaFile } from "@/lib/upload-media";
 
 const DEFAULT_OPTIONS: TranscriptionOptions = {
   provider: "deepgram",
@@ -34,7 +36,11 @@ const STATUS_MESSAGES = [
   "Almost done...",
 ];
 
-export default function MainWorkspace() {
+interface MainWorkspaceProps {
+  blobUploadMode: BlobUploadMode;
+}
+
+export default function MainWorkspace({ blobUploadMode }: MainWorkspaceProps) {
   const [file, setFile] = useState<File | null>(null);
   const [options, setOptions] = useState<TranscriptionOptions>(DEFAULT_OPTIONS);
   const [loading, setLoading] = useState(false);
@@ -57,8 +63,12 @@ export default function MainWorkspace() {
     }, 3500);
 
     try {
+      const audioUrl = await uploadMediaFile(file, blobUploadMode);
+
+      setStatusIndex(1);
+
       const fd = new FormData();
-      fd.append("file", file);
+      fd.append("audioUrl", audioUrl);
       fd.append("provider", options.provider);
       fd.append("summarize", String(options.summarize));
       fd.append("topics", String(options.topics));
@@ -81,8 +91,11 @@ export default function MainWorkspace() {
         const data = await res.json().catch(() => ({}));
         const msg = data.error || `Request failed (${res.status})`;
 
-        if (res.status === 400 && msg.includes("API_KEY")) {
-          toast.error("API key not configured", {
+        if (
+          res.status === 400 &&
+          (msg.includes("API_KEY") || msg.includes("BLOB_READ_WRITE_TOKEN"))
+        ) {
+          toast.error("Server configuration missing", {
             description: msg,
           });
         } else if (res.status === 413) {
@@ -106,7 +119,10 @@ export default function MainWorkspace() {
       });
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : "Network error";
-      toast.error("Request failed", { description: msg });
+      const isBlob = msg.includes("Vercel Blob") || msg.includes("BLOB_READ_WRITE");
+      toast.error(isBlob ? "Upload failed" : "Request failed", {
+        description: msg,
+      });
     } finally {
       clearInterval(interval);
       setLoading(false);

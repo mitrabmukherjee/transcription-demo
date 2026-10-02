@@ -6,6 +6,10 @@ import { Mic } from "lucide-react";
 export default function Home() {
   const deepgramConfigured = !!process.env.DEEPGRAM_API_KEY;
   const assemblyaiConfigured = !!process.env.ASSEMBLYAI_API_KEY;
+  const blobClientUpload = !!process.env.BLOB_READ_WRITE_TOKEN;
+  const blobServerUpload = !!process.env.BLOB_STORE_ID;
+  const blobConfigured = blobClientUpload || blobServerUpload;
+  const blobUploadMode = blobClientUpload ? "client" : "server";
 
   return (
     <div className="min-h-screen bg-background">
@@ -28,6 +32,7 @@ export default function Home() {
           <ApiKeyIndicator
             deepgramConfigured={deepgramConfigured}
             assemblyaiConfigured={assemblyaiConfigured}
+            blobConfigured={blobConfigured}
           />
         </div>
       </header>
@@ -35,7 +40,7 @@ export default function Home() {
       {/* Main workspace */}
       <main className="max-w-7xl mx-auto px-4 sm:px-6 py-8">
         <Suspense>
-          <MainWorkspace />
+          <MainWorkspace blobUploadMode={blobUploadMode} />
         </Suspense>
       </main>
     </div>

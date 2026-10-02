@@ -70,7 +70,11 @@ export async function POST(req: NextRequest) {
     }
     return NextResponse.json({ error: message }, { status: 500 });
   } finally {
-    await del(audioUrl);
+    try {
+      await del(audioUrl);
+    } catch (delErr: unknown) {
+      console.warn("[transcribe] failed to delete blob:", delErr);
+    }
   }
 }
 
