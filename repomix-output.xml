@@ -1,0 +1,2480 @@
+This file is a merged representation of the entire codebase, combined into a single document by Repomix.
+
+<file_summary>
+This section contains a summary of this file.
+
+<purpose>
+This file contains a packed representation of the entire repository's contents.
+It is designed to be easily consumable by AI systems for analysis, code review,
+or other automated processes.
+</purpose>
+
+<file_format>
+The content is organized as follows:
+1. This summary section
+2. Repository information
+3. Directory structure
+4. Repository files (if enabled)
+5. Multiple file entries, each consisting of:
+  - File path as an attribute
+  - Full contents of the file
+</file_format>
+
+<usage_guidelines>
+- This file should be treated as read-only. Any changes should be made to the
+  original repository files, not this packed version.
+- When processing this file, use the file path to distinguish
+  between different files in the repository.
+- Be aware that this file may contain sensitive information. Handle it with
+  the same level of security as you would the original repository.
+</usage_guidelines>
+
+<notes>
+- Some files may have been excluded based on .gitignore rules and Repomix's configuration
+- Binary files are not included in this packed representation. Please refer to the Repository Structure section for a complete list of file paths, including binary files
+- Files matching patterns in .gitignore are excluded
+- Files matching default ignore patterns are excluded
+- Files are sorted by Git change count (files with more changes are at the bottom)
+</notes>
+
+</file_summary>
+
+<directory_structure>
+public/
+  file.svg
+  globe.svg
+  next.svg
+  vercel.svg
+  window.svg
+src/
+  app/
+    api/
+      transcribe/
+        route.ts
+    favicon.ico
+    globals.css
+    layout.tsx
+    page.tsx
+  components/
+    ui/
+      accordion.tsx
+      badge.tsx
+      button.tsx
+      card.tsx
+      input.tsx
+      label.tsx
+      select.tsx
+      switch.tsx
+      tabs.tsx
+    ApiKeyIndicator.tsx
+    FeatureOptions.tsx
+    FileUploader.tsx
+    MainWorkspace.tsx
+    ProviderSelector.tsx
+    ResultsTabs.tsx
+  lib/
+    types.ts
+    utils.ts
+.gitignore
+AGENTS.md
+CLAUDE.md
+components.json
+next.config.ts
+package.json
+postcss.config.mjs
+README.md
+tsconfig.json
+</directory_structure>
+
+<files>
+This section contains the contents of the repository's files.
+
+<file path="src/app/api/transcribe/route.ts">
+import { NextRequest, NextResponse } from "next/server";
+import { DeepgramClient } from "@deepgram/sdk";
+import { AssemblyAI } from "assemblyai";
+import type { SubstitutionPolicy, PiiPolicy } from "assemblyai";
+import { NormalizedResult, TranscriptionResponse } from "@/lib/types";
+
+// Allow up to 10 minutes for large-file transcription jobs
+export const maxDuration = 600;
+
+const MAX_FILE_SIZE = 500 * 1024 * 1024; // 500 MB
+
+export async function POST(req: NextRequest) {
+  let formData: FormData;
+  try {
+    formData = await req.formData();
+  } catch {
+    return NextResponse.json({ error: "Invalid form data" }, { status: 400 });
+  }
+
+  const file = formData.get("file") as File | null;
+  const provider = formData.get("provider") as string;
+
+  if (!file) {
+    return NextResponse.json({ error: "No file uploaded" }, { status: 400 });
+  }
+
+  // Block oversized video files — slicing a video container produces a corrupt file
+  if (file.size > MAX_FILE_SIZE && file.type.startsWith("video/")) {
+    return NextResponse.json(
+      { error: "Video files larger than 500 MB are not supported. Please trim the video or export audio only." },
+      { status: 413 }
+    );
+  }
+
+  const summarize = formData.get("summarize") === "true";
+  const topics = formData.get("topics") === "true";
+  const smartFormat = formData.get("smartFormat") === "true";
+  const punctuation = formData.get("punctuation") === "true";
+  const paragraphs = formData.get("paragraphs") === "true";
+  const utterances = formData.get("utterances") === "true";
+  const silenceThreshold = parseFloat(
+    (formData.get("silenceThreshold") as string) || "0.8"
+  );
+  const profanityFilter = formData.get("profanityFilter") === "true";
+  const redact = formData.get("redact") === "true";
+  const diarize = formData.get("diarize") === "true";
+  const fillerWords = formData.get("fillerWords") === "true";
+
+  const arrayBuffer = await file.arrayBuffer();
+  // Cap at 500 MB — take only the first 500 MB if the file is larger
+  const cappedBuffer =
+    arrayBuffer.byteLength > MAX_FILE_SIZE
+      ? arrayBuffer.slice(0, MAX_FILE_SIZE)
+      : arrayBuffer;
+  const uint8 = new Uint8Array(cappedBuffer);
+
+  const opts = {
+    summarize,
+    topics,
+    smartFormat,
+    punctuation,
+    paragraphs,
+    utterances,
+    silenceThreshold,
+    profanityFilter,
+    redact,
+    diarize,
+    fillerWords,
+  };
+
+  try {
+    if (provider === "deepgram") {
+      return await handleDeepgram(uint8, file.type, opts);
+    } else if (provider === "assemblyai") {
+      return await handleAssemblyAI(uint8, opts);
+    } else {
+      return NextResponse.json({ error: "Invalid provider" }, { status: 400 });
+    }
+  } catch (err: unknown) {
+    console.error("[transcribe] error:", err);
+    const message = err instanceof Error ? err.message : String(err);
+    if (message.toLowerCase().includes("timeout")) {
+      return NextResponse.json(
+        { error: "API request timed out. Try a shorter audio file." },
+        { status: 504 }
+      );
+    }
+    return NextResponse.json({ error: message }, { status: 500 });
+  }
+}
+
+interface ToggleOptions {
+  summarize: boolean;
+  topics: boolean;
+  smartFormat: boolean;
+  punctuation: boolean;
+  paragraphs: boolean;
+  utterances: boolean;
+  silenceThreshold: number;
+  profanityFilter: boolean;
+  redact: boolean;
+  diarize: boolean;
+  fillerWords: boolean;
+}
+
+async function handleDeepgram(
+  data: Uint8Array,
+  mimeType: string,
+  opts: ToggleOptions
+) {
+  const apiKey = process.env.DEEPGRAM_API_KEY;
+  if (!apiKey) {
+    return NextResponse.json(
+      { error: "DEEPGRAM_API_KEY is not configured" },
+      { status: 400 }
+    );
+  }
+
+  const client = new DeepgramClient({ apiKey });
+
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const request: Record<string, any> = {
+    model: "nova-3",
+    language: "en",
+  };
+  if (opts.summarize) request.summarize = "v2";
+  if (opts.topics) request.topics = true;
+  if (opts.smartFormat) request.smart_format = true;
+  if (opts.punctuation) request.punctuate = true;
+  if (opts.paragraphs) request.paragraphs = true;
+  if (opts.utterances) {
+    request.utterances = true;
+    request.utt_split = opts.silenceThreshold;
+  }
+  if (opts.profanityFilter) request.profanity_filter = true;
+  if (opts.redact) request.redact = "pci ssn email numbers";
+  if (opts.diarize) request.diarize = true;
+  if (opts.fillerWords) request.filler_words = true;
+
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const result: any = await client.listen.v1.media.transcribeFile(
+    { data, contentType: mimeType },
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    request as any
+  );
+
+  const channel = result?.results?.channels?.[0]?.alternatives?.[0];
+  const transcript: string = channel?.transcript || "";
+
+  const paragraphTexts: string[] = [];
+  if (opts.paragraphs && channel?.paragraphs?.paragraphs) {
+    for (const para of channel.paragraphs.paragraphs) {
+      paragraphTexts.push(
+        (para.sentences as { text: string }[] | undefined)
+          ?.map((s) => s.text)
+          .join(" ") || ""
+      );
+    }
+  }
+
+  const summaryText: string | null =
+    opts.summarize && result?.results?.summary?.short
+      ? String(result.results.summary.short)
+      : null;
+
+  const topicsList: string[] = [];
+  if (opts.topics && result?.results?.topics?.segments) {
+    for (const seg of result.results.topics.segments) {
+      for (const t of (seg.topics as { topic: string }[] | undefined) || []) {
+        if (t.topic && !topicsList.includes(t.topic)) {
+          topicsList.push(t.topic);
+        }
+      }
+    }
+  }
+
+  const utterancesList = (
+    (result?.results?.utterances as {
+      speaker: number;
+      start: number;
+      end: number;
+      transcript: string;
+    }[]) || []
+  ).map((u) => ({
+    speaker: `Speaker ${u.speaker}`,
+    start: u.start,
+    end: u.end,
+    text: u.transcript,
+  }));
+
+  const normalized: NormalizedResult = {
+    transcript,
+    paragraphs: paragraphTexts,
+    summary: summaryText,
+    topics: topicsList,
+    piiEntities: [],
+    utterances: utterancesList,
+  };
+
+  const response: TranscriptionResponse = {
+    provider: "deepgram",
+    raw: result,
+    normalized,
+  };
+
+  return NextResponse.json(response);
+}
+
+async function handleAssemblyAI(data: Uint8Array, opts: ToggleOptions) {
+  const apiKey = process.env.ASSEMBLYAI_API_KEY;
+  if (!apiKey) {
+    return NextResponse.json(
+      { error: "ASSEMBLYAI_API_KEY is not configured" },
+      { status: 400 }
+    );
+  }
+
+  const client = new AssemblyAI({ apiKey });
+
+  // Upload the raw bytes
+  const uploadUrl = await client.files.upload(data);
+
+  const piiPolicies: PiiPolicy[] = [
+    "credit_card_number",
+    "email_address",
+    "phone_number",
+    "us_social_security_number",
+    "banking_information",
+  ];
+
+  const transcript = await client.transcripts.transcribe({
+    audio_url: uploadUrl,
+    ...(opts.summarize && {
+      summarization: true,
+      summary_model: "informative",
+      summary_type: "bullets",
+    }),
+    ...(opts.topics && { iab_categories: true }),
+    ...(opts.smartFormat && { format_text: true }),
+    ...(opts.punctuation && { punctuate: true }),
+    ...(opts.utterances && { speech_threshold: opts.silenceThreshold }),
+    ...(opts.profanityFilter && { filter_profanity: true }),
+    ...(opts.redact && {
+      redact_pii: true,
+      redact_pii_sub: "entity_name" as SubstitutionPolicy,
+      redact_pii_policies: piiPolicies,
+    }),
+    ...(opts.diarize && { speaker_labels: true }),
+    ...(opts.fillerWords && { disfluencies: true }),
+  });
+
+  if (transcript.status === "error") {
+    throw new Error(transcript.error || "AssemblyAI transcription error");
+  }
+
+  const topicsList: string[] = [];
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const iabSummary = (transcript as any)?.iab_categories_result?.summary as
+    | Record<string, number>
+    | undefined;
+  if (opts.topics && iabSummary) {
+    topicsList.push(...Object.keys(iabSummary).slice(0, 15));
+  }
+
+  const utterancesList = (transcript.utterances || []).map((u) => ({
+    speaker: `Speaker ${u.speaker}`,
+    start: (u.start || 0) / 1000,
+    end: (u.end || 0) / 1000,
+    text: u.text,
+  }));
+
+  const piiEntities: string[] = [];
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const entities = (transcript as any)?.entities as
+    | { entity_type: string }[]
+    | undefined;
+  if (opts.redact && entities) {
+    for (const entity of entities) {
+      if (!piiEntities.includes(entity.entity_type)) {
+        piiEntities.push(entity.entity_type);
+      }
+    }
+  }
+
+  const normalized: NormalizedResult = {
+    transcript: transcript.text || "",
+    paragraphs: [],
+    summary: transcript.summary || null,
+    topics: topicsList,
+    piiEntities,
+    utterances: utterancesList,
+  };
+
+  const response: TranscriptionResponse = {
+    provider: "assemblyai",
+    raw: transcript,
+    normalized,
+  };
+
+  return NextResponse.json(response);
+}
+</file>
+
+<file path="src/components/ui/accordion.tsx">
+import { Accordion as AccordionPrimitive } from "@base-ui/react/accordion"
+import { cn } from "cn"
+import { ChevronDownIcon, ChevronUpIcon } from "lucide-react"
+
+function Accordion({ className, ...props }: AccordionPrimitive.Root.Props) {
+  return (
+    <AccordionPrimitive.Root
+      data-slot="accordion"
+      className={cn("flex w-full flex-col", className)}
+      {...props}
+    />
+  )
+}
+
+function AccordionItem({ className, ...props }: AccordionPrimitive.Item.Props) {
+  return (
+    <AccordionPrimitive.Item
+      data-slot="accordion-item"
+      className={cn("not-last:border-b", className)}
+      {...props}
+    />
+  )
+}
+
+function AccordionTrigger({
+  className,
+  children,
+  ...props
+}: AccordionPrimitive.Trigger.Props) {
+  return (
+    <AccordionPrimitive.Header className="flex">
+      <AccordionPrimitive.Trigger
+        data-slot="accordion-trigger"
+        className={cn(
+          "group/accordion-trigger relative flex flex-1 items-start justify-between rounded-lg border border-transparent py-2.5 text-left text-sm font-medium transition-all outline-none hover:underline focus-visible:border-ring focus-visible:ring-3 focus-visible:ring-ring/50 focus-visible:after:border-ring aria-disabled:pointer-events-none aria-disabled:opacity-50 **:data-[slot=accordion-trigger-icon]:ml-auto **:data-[slot=accordion-trigger-icon]:size-4 **:data-[slot=accordion-trigger-icon]:text-muted-foreground",
+          className
+        )}
+        {...props}
+      >
+        {children}
+        <ChevronDownIcon data-slot="accordion-trigger-icon" className="pointer-events-none shrink-0 group-aria-expanded/accordion-trigger:hidden" />
+        <ChevronUpIcon data-slot="accordion-trigger-icon" className="pointer-events-none hidden shrink-0 group-aria-expanded/accordion-trigger:inline" />
+      </AccordionPrimitive.Trigger>
+    </AccordionPrimitive.Header>
+  )
+}
+
+function AccordionContent({
+  className,
+  children,
+  ...props
+}: AccordionPrimitive.Panel.Props) {
+  return (
+    <AccordionPrimitive.Panel
+      data-slot="accordion-content"
+      className="overflow-hidden text-sm data-open:animate-accordion-down data-closed:animate-accordion-up"
+      {...props}
+    >
+      <div
+        className={cn(
+          "h-(--accordion-panel-height) pt-0 pb-2.5 data-ending-style:h-0 data-starting-style:h-0 [&_a]:underline [&_a]:underline-offset-3 [&_a]:hover:text-foreground [&_p:not(:last-child)]:mb-4",
+          className
+        )}
+      >
+        {children}
+      </div>
+    </AccordionPrimitive.Panel>
+  )
+}
+
+export { Accordion, AccordionItem, AccordionTrigger, AccordionContent }
+</file>
+
+<file path="src/components/ui/badge.tsx">
+import { mergeProps } from "@base-ui/react/merge-props"
+import { useRender } from "@base-ui/react/use-render"
+import { cva, type VariantProps } from "class-variance-authority"
+import { cn } from "cn"
+
+const badgeVariants = cva(
+  "group/badge inline-flex h-5 w-fit shrink-0 items-center justify-center gap-1 overflow-hidden rounded-4xl border border-transparent px-2 py-0.5 text-xs font-medium whitespace-nowrap transition-all focus-visible:border-ring focus-visible:ring-[3px] focus-visible:ring-ring/50 has-data-[icon=inline-end]:pr-1.5 has-data-[icon=inline-start]:pl-1.5 aria-invalid:border-destructive aria-invalid:ring-destructive/20 dark:aria-invalid:ring-destructive/40 [&>svg]:pointer-events-none [&>svg]:size-3!",
+  {
+    variants: {
+      variant: {
+        default: "bg-primary text-primary-foreground [a]:hover:bg-primary/80",
+        secondary:
+          "bg-secondary text-secondary-foreground [a]:hover:bg-secondary/80",
+        destructive:
+          "bg-destructive/10 text-destructive focus-visible:ring-destructive/20 dark:bg-destructive/20 dark:focus-visible:ring-destructive/40 [a]:hover:bg-destructive/20",
+        outline:
+          "border-border text-foreground [a]:hover:bg-muted [a]:hover:text-muted-foreground",
+        ghost:
+          "hover:bg-muted hover:text-muted-foreground dark:hover:bg-muted/50",
+        link: "text-primary underline-offset-4 hover:underline",
+      },
+    },
+    defaultVariants: {
+      variant: "default",
+    },
+  }
+)
+
+function Badge({
+  className,
+  variant = "default",
+  render,
+  ...props
+}: useRender.ComponentProps<"span"> & VariantProps<typeof badgeVariants>) {
+  return useRender({
+    defaultTagName: "span",
+    props: mergeProps<"span">(
+      {
+        className: cn(badgeVariants({ variant }), className),
+      },
+      props
+    ),
+    render,
+    state: {
+      slot: "badge",
+      variant,
+    },
+  })
+}
+
+export { Badge, badgeVariants }
+</file>
+
+<file path="src/components/ui/button.tsx">
+import { Button as ButtonPrimitive } from "@base-ui/react/button"
+import { cva, type VariantProps } from "class-variance-authority"
+import { cn } from "cn"
+
+const buttonVariants = cva(
+  "group/button inline-flex shrink-0 items-center justify-center rounded-lg border border-transparent bg-clip-padding text-sm font-medium whitespace-nowrap transition-all outline-none select-none focus-visible:border-ring focus-visible:ring-3 focus-visible:ring-ring/50 active:not-aria-[haspopup]:translate-y-px disabled:pointer-events-none disabled:opacity-50 aria-invalid:border-destructive aria-invalid:ring-3 aria-invalid:ring-destructive/20 dark:aria-invalid:border-destructive/50 dark:aria-invalid:ring-destructive/40 [&_svg]:pointer-events-none [&_svg]:shrink-0 [&_svg:not([class*='size-'])]:size-4",
+  {
+    variants: {
+      variant: {
+        default: "bg-primary text-primary-foreground hover:bg-primary/80",
+        outline:
+          "border-border bg-background hover:bg-muted hover:text-foreground aria-expanded:bg-muted aria-expanded:text-foreground dark:border-input dark:bg-input/30 dark:hover:bg-input/50",
+        secondary:
+          "bg-secondary text-secondary-foreground hover:bg-[color-mix(in_oklch,var(--secondary),var(--foreground)_5%)] aria-expanded:bg-secondary aria-expanded:text-secondary-foreground",
+        ghost:
+          "hover:bg-muted hover:text-foreground aria-expanded:bg-muted aria-expanded:text-foreground dark:hover:bg-muted/50",
+        destructive:
+          "bg-destructive/10 text-destructive hover:bg-destructive/20 focus-visible:border-destructive/40 focus-visible:ring-destructive/20 dark:bg-destructive/20 dark:hover:bg-destructive/30 dark:focus-visible:ring-destructive/40",
+        link: "text-primary underline-offset-4 hover:underline",
+      },
+      size: {
+        default:
+          "h-8 gap-1.5 px-2.5 has-data-[icon=inline-end]:pr-2 has-data-[icon=inline-start]:pl-2",
+        xs: "h-6 gap-1 rounded-[min(var(--radius-md),10px)] px-2 text-xs in-data-[slot=button-group]:rounded-lg has-data-[icon=inline-end]:pr-1.5 has-data-[icon=inline-start]:pl-1.5 [&_svg:not([class*='size-'])]:size-3",
+        sm: "h-7 gap-1 rounded-[min(var(--radius-md),12px)] px-2.5 text-[0.8rem] in-data-[slot=button-group]:rounded-lg has-data-[icon=inline-end]:pr-1.5 has-data-[icon=inline-start]:pl-1.5 [&_svg:not([class*='size-'])]:size-3.5",
+        lg: "h-9 gap-1.5 px-2.5 has-data-[icon=inline-end]:pr-2 has-data-[icon=inline-start]:pl-2",
+        icon: "size-8",
+        "icon-xs":
+          "size-6 rounded-[min(var(--radius-md),10px)] in-data-[slot=button-group]:rounded-lg [&_svg:not([class*='size-'])]:size-3",
+        "icon-sm":
+          "size-7 rounded-[min(var(--radius-md),12px)] in-data-[slot=button-group]:rounded-lg",
+        "icon-lg": "size-9",
+      },
+    },
+    defaultVariants: {
+      variant: "default",
+      size: "default",
+    },
+  }
+)
+
+function Button({
+  className,
+  variant = "default",
+  size = "default",
+  ...props
+}: ButtonPrimitive.Props & VariantProps<typeof buttonVariants>) {
+  return (
+    <ButtonPrimitive
+      data-slot="button"
+      className={cn(buttonVariants({ variant, size, className }))}
+      {...props}
+    />
+  )
+}
+
+export { Button, buttonVariants }
+</file>
+
+<file path="src/components/ui/card.tsx">
+import * as React from "react"
+import { cn } from "cn"
+
+function Card({
+  className,
+  size = "default",
+  ...props
+}: React.ComponentProps<"div"> & { size?: "default" | "sm" }) {
+  return (
+    <div
+      data-slot="card"
+      data-size={size}
+      className={cn(
+        "group/card flex flex-col gap-(--card-spacing) overflow-hidden rounded-xl bg-card py-(--card-spacing) text-sm text-card-foreground ring-1 ring-foreground/10 [--card-spacing:--spacing(4)] has-data-[slot=card-footer]:pb-0 has-[>img:first-child]:pt-0 data-[size=sm]:[--card-spacing:--spacing(3)] data-[size=sm]:has-data-[slot=card-footer]:pb-0 *:[img:first-child]:rounded-t-xl *:[img:last-child]:rounded-b-xl",
+        className
+      )}
+      {...props}
+    />
+  )
+}
+
+function CardHeader({ className, ...props }: React.ComponentProps<"div">) {
+  return (
+    <div
+      data-slot="card-header"
+      className={cn(
+        "group/card-header @container/card-header grid auto-rows-min items-start gap-1 rounded-t-xl px-(--card-spacing) has-data-[slot=card-action]:grid-cols-[1fr_auto] has-data-[slot=card-description]:grid-rows-[auto_auto] [.border-b]:pb-(--card-spacing)",
+        className
+      )}
+      {...props}
+    />
+  )
+}
+
+function CardTitle({ className, ...props }: React.ComponentProps<"div">) {
+  return (
+    <div
+      data-slot="card-title"
+      className={cn(
+        "font-heading text-base leading-snug font-medium group-data-[size=sm]/card:text-sm",
+        className
+      )}
+      {...props}
+    />
+  )
+}
+
+function CardDescription({ className, ...props }: React.ComponentProps<"div">) {
+  return (
+    <div
+      data-slot="card-description"
+      className={cn("text-sm text-muted-foreground", className)}
+      {...props}
+    />
+  )
+}
+
+function CardAction({ className, ...props }: React.ComponentProps<"div">) {
+  return (
+    <div
+      data-slot="card-action"
+      className={cn(
+        "col-start-2 row-span-2 row-start-1 self-start justify-self-end",
+        className
+      )}
+      {...props}
+    />
+  )
+}
+
+function CardContent({ className, ...props }: React.ComponentProps<"div">) {
+  return (
+    <div
+      data-slot="card-content"
+      className={cn("px-(--card-spacing)", className)}
+      {...props}
+    />
+  )
+}
+
+function CardFooter({ className, ...props }: React.ComponentProps<"div">) {
+  return (
+    <div
+      data-slot="card-footer"
+      className={cn(
+        "flex items-center rounded-b-xl border-t bg-muted/50 p-(--card-spacing)",
+        className
+      )}
+      {...props}
+    />
+  )
+}
+
+export {
+  Card,
+  CardHeader,
+  CardFooter,
+  CardTitle,
+  CardAction,
+  CardDescription,
+  CardContent,
+}
+</file>
+
+<file path="src/components/ui/input.tsx">
+import * as React from "react"
+import { Input as InputPrimitive } from "@base-ui/react/input"
+import { cn } from "cn"
+
+function Input({ className, type, ...props }: React.ComponentProps<"input">) {
+  return (
+    <InputPrimitive
+      type={type}
+      data-slot="input"
+      className={cn(
+        "h-8 w-full min-w-0 rounded-lg border border-input bg-transparent px-2.5 py-1 text-base transition-colors outline-none file:inline-flex file:h-6 file:border-0 file:bg-transparent file:text-sm file:font-medium file:text-foreground placeholder:text-muted-foreground focus-visible:border-ring focus-visible:ring-3 focus-visible:ring-ring/50 disabled:pointer-events-none disabled:cursor-not-allowed disabled:bg-input/50 disabled:opacity-50 aria-invalid:border-destructive aria-invalid:ring-3 aria-invalid:ring-destructive/20 md:text-sm dark:bg-input/30 dark:disabled:bg-input/80 dark:aria-invalid:border-destructive/50 dark:aria-invalid:ring-destructive/40",
+        className
+      )}
+      {...props}
+    />
+  )
+}
+
+export { Input }
+</file>
+
+<file path="src/components/ui/label.tsx">
+"use client"
+
+import * as React from "react"
+import { cn } from "cn"
+
+function Label({ className, ...props }: React.ComponentProps<"label">) {
+  return (
+    <label
+      data-slot="label"
+      className={cn(
+        "flex items-center gap-2 text-sm leading-none font-medium select-none group-data-[disabled=true]:pointer-events-none group-data-[disabled=true]:opacity-50 peer-disabled:cursor-not-allowed peer-disabled:opacity-50",
+        className
+      )}
+      {...props}
+    />
+  )
+}
+
+export { Label }
+</file>
+
+<file path="src/components/ui/select.tsx">
+"use client"
+
+import * as React from "react"
+import { Select as SelectPrimitive } from "@base-ui/react/select"
+import { cn } from "cn"
+import { ChevronDownIcon, CheckIcon, ChevronUpIcon } from "lucide-react"
+
+const Select = SelectPrimitive.Root
+
+function SelectGroup({ className, ...props }: SelectPrimitive.Group.Props) {
+  return (
+    <SelectPrimitive.Group
+      data-slot="select-group"
+      className={cn("scroll-my-1 p-1", className)}
+      {...props}
+    />
+  )
+}
+
+function SelectValue({ className, ...props }: SelectPrimitive.Value.Props) {
+  return (
+    <SelectPrimitive.Value
+      data-slot="select-value"
+      className={cn("flex flex-1 text-left", className)}
+      {...props}
+    />
+  )
+}
+
+function SelectTrigger({
+  className,
+  size = "default",
+  children,
+  ...props
+}: SelectPrimitive.Trigger.Props & {
+  size?: "sm" | "default"
+}) {
+  return (
+    <SelectPrimitive.Trigger
+      data-slot="select-trigger"
+      data-size={size}
+      className={cn(
+        "flex w-fit items-center justify-between gap-1.5 rounded-lg border border-input bg-transparent py-2 pr-2 pl-2.5 text-sm whitespace-nowrap transition-colors outline-none select-none focus-visible:border-ring focus-visible:ring-3 focus-visible:ring-ring/50 disabled:cursor-not-allowed disabled:opacity-50 aria-invalid:border-destructive aria-invalid:ring-3 aria-invalid:ring-destructive/20 data-placeholder:text-muted-foreground data-[size=default]:h-8 data-[size=sm]:h-7 data-[size=sm]:rounded-[min(var(--radius-md),10px)] *:data-[slot=select-value]:line-clamp-1 *:data-[slot=select-value]:flex *:data-[slot=select-value]:items-center *:data-[slot=select-value]:gap-1.5 dark:bg-input/30 dark:hover:bg-input/50 dark:aria-invalid:border-destructive/50 dark:aria-invalid:ring-destructive/40 [&_svg]:pointer-events-none [&_svg]:shrink-0 [&_svg:not([class*='size-'])]:size-4",
+        className
+      )}
+      {...props}
+    >
+      {children}
+      <SelectPrimitive.Icon
+        render={
+          <ChevronDownIcon className="pointer-events-none size-4 text-muted-foreground" />
+        }
+      />
+    </SelectPrimitive.Trigger>
+  )
+}
+
+function SelectContent({
+  className,
+  children,
+  side = "bottom",
+  sideOffset = 4,
+  align = "center",
+  alignOffset = 0,
+  alignItemWithTrigger = true,
+  ...props
+}: SelectPrimitive.Popup.Props &
+  Pick<
+    SelectPrimitive.Positioner.Props,
+    "align" | "alignOffset" | "side" | "sideOffset" | "alignItemWithTrigger"
+  >) {
+  return (
+    <SelectPrimitive.Portal>
+      <SelectPrimitive.Positioner
+        side={side}
+        sideOffset={sideOffset}
+        align={align}
+        alignOffset={alignOffset}
+        alignItemWithTrigger={alignItemWithTrigger}
+        className="isolate z-50"
+      >
+        <SelectPrimitive.Popup
+          data-slot="select-content"
+          data-align-trigger={alignItemWithTrigger}
+          className={cn("relative isolate z-50 max-h-(--available-height) w-(--anchor-width) min-w-36 origin-(--transform-origin) overflow-x-hidden overflow-y-auto rounded-lg bg-popover text-popover-foreground shadow-md ring-1 ring-foreground/10 duration-100 data-[align-trigger=true]:animate-none data-[side=bottom]:slide-in-from-top-2 data-[side=inline-end]:slide-in-from-left-2 data-[side=inline-start]:slide-in-from-right-2 data-[side=left]:slide-in-from-right-2 data-[side=right]:slide-in-from-left-2 data-[side=top]:slide-in-from-bottom-2 data-open:animate-in data-open:fade-in-0 data-open:zoom-in-95 data-closed:animate-out data-closed:fade-out-0 data-closed:zoom-out-95", className )}
+          {...props}
+        >
+          <SelectScrollUpButton />
+          <SelectPrimitive.List>{children}</SelectPrimitive.List>
+          <SelectScrollDownButton />
+        </SelectPrimitive.Popup>
+      </SelectPrimitive.Positioner>
+    </SelectPrimitive.Portal>
+  )
+}
+
+function SelectLabel({
+  className,
+  ...props
+}: SelectPrimitive.GroupLabel.Props) {
+  return (
+    <SelectPrimitive.GroupLabel
+      data-slot="select-label"
+      className={cn("px-1.5 py-1 text-xs text-muted-foreground", className)}
+      {...props}
+    />
+  )
+}
+
+function SelectItem({
+  className,
+  children,
+  ...props
+}: SelectPrimitive.Item.Props) {
+  return (
+    <SelectPrimitive.Item
+      data-slot="select-item"
+      className={cn(
+        "relative flex w-full cursor-default items-center gap-1.5 rounded-md py-1 pr-8 pl-1.5 text-sm outline-hidden select-none focus:bg-accent focus:text-accent-foreground not-data-[variant=destructive]:focus:**:text-accent-foreground data-disabled:pointer-events-none data-disabled:opacity-50 [&_svg]:pointer-events-none [&_svg]:shrink-0 [&_svg:not([class*='size-'])]:size-4 *:[span]:last:flex *:[span]:last:items-center *:[span]:last:gap-2",
+        className
+      )}
+      {...props}
+    >
+      <SelectPrimitive.ItemText className="flex flex-1 shrink-0 gap-2 whitespace-nowrap">
+        {children}
+      </SelectPrimitive.ItemText>
+      <SelectPrimitive.ItemIndicator
+        render={
+          <span className="pointer-events-none absolute right-2 flex size-4 items-center justify-center" />
+        }
+      >
+        <CheckIcon className="pointer-events-none" />
+      </SelectPrimitive.ItemIndicator>
+    </SelectPrimitive.Item>
+  )
+}
+
+function SelectSeparator({
+  className,
+  ...props
+}: SelectPrimitive.Separator.Props) {
+  return (
+    <SelectPrimitive.Separator
+      data-slot="select-separator"
+      className={cn("pointer-events-none -mx-1 my-1 h-px bg-border", className)}
+      {...props}
+    />
+  )
+}
+
+function SelectScrollUpButton({
+  className,
+  ...props
+}: React.ComponentProps<typeof SelectPrimitive.ScrollUpArrow>) {
+  return (
+    <SelectPrimitive.ScrollUpArrow
+      data-slot="select-scroll-up-button"
+      className={cn(
+        "top-0 z-10 flex w-full cursor-default items-center justify-center bg-popover py-1 [&_svg:not([class*='size-'])]:size-4",
+        className
+      )}
+      {...props}
+    >
+      <ChevronUpIcon
+      />
+    </SelectPrimitive.ScrollUpArrow>
+  )
+}
+
+function SelectScrollDownButton({
+  className,
+  ...props
+}: React.ComponentProps<typeof SelectPrimitive.ScrollDownArrow>) {
+  return (
+    <SelectPrimitive.ScrollDownArrow
+      data-slot="select-scroll-down-button"
+      className={cn(
+        "bottom-0 z-10 flex w-full cursor-default items-center justify-center bg-popover py-1 [&_svg:not([class*='size-'])]:size-4",
+        className
+      )}
+      {...props}
+    >
+      <ChevronDownIcon
+      />
+    </SelectPrimitive.ScrollDownArrow>
+  )
+}
+
+export {
+  Select,
+  SelectContent,
+  SelectGroup,
+  SelectItem,
+  SelectLabel,
+  SelectScrollDownButton,
+  SelectScrollUpButton,
+  SelectSeparator,
+  SelectTrigger,
+  SelectValue,
+}
+</file>
+
+<file path="src/components/ui/switch.tsx">
+"use client"
+
+import { Switch as SwitchPrimitive } from "@base-ui/react/switch"
+import { cn } from "cn"
+
+function Switch({
+  className,
+  size = "default",
+  ...props
+}: SwitchPrimitive.Root.Props & {
+  size?: "sm" | "default"
+}) {
+  return (
+    <SwitchPrimitive.Root
+      data-slot="switch"
+      data-size={size}
+      className={cn(
+        "peer group/switch relative inline-flex shrink-0 items-center rounded-full border border-transparent transition-all outline-none group-has-[:focus-visible]/field-label:border-transparent group-has-[:focus-visible]/field-label:ring-0 after:absolute after:-inset-x-3 after:-inset-y-2 focus-visible:border-ring focus-visible:ring-3 focus-visible:ring-ring/50 aria-invalid:border-destructive aria-invalid:ring-3 aria-invalid:ring-destructive/20 data-[size=default]:h-[18.4px] data-[size=default]:w-[32px] data-[size=sm]:h-[14px] data-[size=sm]:w-[24px] dark:aria-invalid:border-destructive/50 dark:aria-invalid:ring-destructive/40 data-checked:bg-primary data-unchecked:bg-input dark:data-unchecked:bg-input/80 data-disabled:cursor-not-allowed data-disabled:opacity-50",
+        className
+      )}
+      {...props}
+    >
+      <SwitchPrimitive.Thumb
+        data-slot="switch-thumb"
+        className="pointer-events-none block rounded-full bg-background ring-0 transition-transform group-data-[size=default]/switch:size-4 group-data-[size=sm]/switch:size-3 group-data-[size=default]/switch:data-checked:translate-x-[calc(100%-2px)] group-data-[size=sm]/switch:data-checked:translate-x-[calc(100%-2px)] dark:data-checked:bg-primary-foreground group-data-[size=default]/switch:data-unchecked:translate-x-0 group-data-[size=sm]/switch:data-unchecked:translate-x-0 dark:data-unchecked:bg-foreground"
+      />
+    </SwitchPrimitive.Root>
+  )
+}
+
+export { Switch }
+</file>
+
+<file path="src/components/ui/tabs.tsx">
+"use client"
+
+import { Tabs as TabsPrimitive } from "@base-ui/react/tabs"
+import { cva, type VariantProps } from "class-variance-authority"
+import { cn } from "cn"
+
+function Tabs({
+  className,
+  orientation = "horizontal",
+  ...props
+}: TabsPrimitive.Root.Props) {
+  return (
+    <TabsPrimitive.Root
+      data-slot="tabs"
+      data-orientation={orientation}
+      className={cn(
+        "group/tabs flex gap-2 data-horizontal:flex-col",
+        className
+      )}
+      {...props}
+    />
+  )
+}
+
+const tabsListVariants = cva(
+  "group/tabs-list inline-flex w-fit items-center justify-center rounded-lg p-[3px] text-muted-foreground group-data-horizontal/tabs:h-8 group-data-vertical/tabs:h-fit group-data-vertical/tabs:flex-col data-[variant=line]:rounded-none",
+  {
+    variants: {
+      variant: {
+        default: "bg-muted",
+        line: "gap-1 bg-transparent",
+      },
+    },
+    defaultVariants: {
+      variant: "default",
+    },
+  }
+)
+
+function TabsList({
+  className,
+  variant = "default",
+  ...props
+}: TabsPrimitive.List.Props & VariantProps<typeof tabsListVariants>) {
+  return (
+    <TabsPrimitive.List
+      data-slot="tabs-list"
+      data-variant={variant}
+      className={cn(tabsListVariants({ variant }), className)}
+      {...props}
+    />
+  )
+}
+
+function TabsTrigger({ className, ...props }: TabsPrimitive.Tab.Props) {
+  return (
+    <TabsPrimitive.Tab
+      data-slot="tabs-trigger"
+      className={cn(
+        "relative inline-flex h-[calc(100%-1px)] flex-1 items-center justify-center gap-1.5 rounded-md border border-transparent px-1.5 py-0.5 text-sm font-medium whitespace-nowrap text-foreground/60 transition-all group-data-vertical/tabs:w-full group-data-vertical/tabs:justify-start hover:text-foreground focus-visible:border-ring focus-visible:ring-[3px] focus-visible:ring-ring/50 focus-visible:outline-1 focus-visible:outline-ring disabled:pointer-events-none disabled:opacity-50 has-data-[icon=inline-end]:pr-1 has-data-[icon=inline-start]:pl-1 aria-disabled:pointer-events-none aria-disabled:opacity-50 dark:text-muted-foreground dark:hover:text-foreground group-data-[variant=default]/tabs-list:data-active:shadow-sm group-data-[variant=line]/tabs-list:data-active:shadow-none [&_svg]:pointer-events-none [&_svg]:shrink-0 [&_svg:not([class*='size-'])]:size-4",
+        "group-data-[variant=line]/tabs-list:bg-transparent group-data-[variant=line]/tabs-list:data-active:bg-transparent dark:group-data-[variant=line]/tabs-list:data-active:border-transparent dark:group-data-[variant=line]/tabs-list:data-active:bg-transparent",
+        "data-active:bg-background data-active:text-foreground dark:data-active:border-input dark:data-active:bg-input/30 dark:data-active:text-foreground",
+        "after:absolute after:bg-foreground after:opacity-0 after:transition-opacity group-data-horizontal/tabs:after:inset-x-0 group-data-horizontal/tabs:after:bottom-[-5px] group-data-horizontal/tabs:after:h-0.5 group-data-vertical/tabs:after:inset-y-0 group-data-vertical/tabs:after:-right-1 group-data-vertical/tabs:after:w-0.5 group-data-[variant=line]/tabs-list:data-active:after:opacity-100",
+        className
+      )}
+      {...props}
+    />
+  )
+}
+
+function TabsContent({ className, ...props }: TabsPrimitive.Panel.Props) {
+  return (
+    <TabsPrimitive.Panel
+      data-slot="tabs-content"
+      className={cn("flex-1 text-sm outline-none", className)}
+      {...props}
+    />
+  )
+}
+
+export { Tabs, TabsList, TabsTrigger, TabsContent, tabsListVariants }
+</file>
+
+<file path="src/components/ApiKeyIndicator.tsx">
+import { CheckCircle2, XCircle } from "lucide-react";
+
+interface ApiKeyIndicatorProps {
+  deepgramConfigured: boolean;
+  assemblyaiConfigured: boolean;
+}
+
+export function ApiKeyIndicator({
+  deepgramConfigured,
+  assemblyaiConfigured,
+}: ApiKeyIndicatorProps) {
+  const keys = [
+    { label: "Deepgram", ok: deepgramConfigured },
+    { label: "AssemblyAI", ok: assemblyaiConfigured },
+  ];
+
+  return (
+    <div className="flex items-center gap-3 flex-wrap">
+      {keys.map((k) => (
+        <div
+          key={k.label}
+          className={`flex items-center gap-1.5 text-xs px-2.5 py-1 rounded-full font-medium border ${
+            k.ok
+              ? "border-green-300 bg-green-50 text-green-700 dark:border-green-800 dark:bg-green-950/30 dark:text-green-400"
+              : "border-red-300 bg-red-50 text-red-700 dark:border-red-800 dark:bg-red-950/30 dark:text-red-400"
+          }`}
+        >
+          {k.ok ? (
+            <CheckCircle2 className="h-3.5 w-3.5" />
+          ) : (
+            <XCircle className="h-3.5 w-3.5" />
+          )}
+          {k.label} API Key
+        </div>
+      ))}
+    </div>
+  );
+}
+</file>
+
+<file path="src/components/FeatureOptions.tsx">
+"use client";
+
+import { Switch } from "@/components/ui/switch";
+import { Label } from "@/components/ui/label";
+import { Input } from "@/components/ui/input";
+import { TranscriptionOptions } from "@/lib/types";
+
+interface FeatureOptionsProps {
+  options: TranscriptionOptions;
+  onChange: (options: TranscriptionOptions) => void;
+}
+
+interface FeatureDef {
+  key: keyof TranscriptionOptions;
+  label: string;
+  description: string;
+}
+
+const features: FeatureDef[] = [
+  {
+    key: "summarize",
+    label: "Summarization",
+    description: "Generate executive summary of the content.",
+  },
+  {
+    key: "topics",
+    label: "Topic Detection",
+    description: "Identify key topics and categories across sections.",
+  },
+  {
+    key: "smartFormat",
+    label: "Smart Format",
+    description: "Apply intelligent formatting for dates, times, and numbers.",
+  },
+  {
+    key: "punctuation",
+    label: "Punctuation",
+    description: "Include automatic capitalization and punctuation.",
+  },
+  {
+    key: "paragraphs",
+    label: "Paragraphs",
+    description: "Split transcript into readable paragraphs.",
+  },
+  {
+    key: "utterances",
+    label: "Utterance Segmentation",
+    description: "Group speech into semantic units.",
+  },
+  {
+    key: "profanityFilter",
+    label: "Profanity Filter",
+    description: "Automatically filter/censor profanity.",
+  },
+  {
+    key: "redact",
+    label: "Redaction",
+    description: "Redact sensitive PII data with asterisks (*).",
+  },
+  {
+    key: "diarize",
+    label: "Diarization",
+    description: "Identify speaker changes (Speaker 0, Speaker 1, etc.).",
+  },
+  {
+    key: "fillerWords",
+    label: "Filler Words",
+    description: 'Keep disfluencies like "uh" and "um" (Verbatim mode).',
+  },
+];
+
+export function FeatureOptions({ options, onChange }: FeatureOptionsProps) {
+  const set = (key: keyof TranscriptionOptions, value: boolean | number) => {
+    onChange({ ...options, [key]: value });
+  };
+
+  return (
+    <div className="space-y-2">
+      <div className="grid grid-cols-1 gap-2">
+        {features.map((f) => (
+          <div
+            key={f.key}
+            className="flex items-start gap-3 rounded-lg border p-3 hover:bg-muted/30 transition-colors"
+          >
+            <Switch
+              id={f.key}
+              checked={options[f.key] as boolean}
+              onCheckedChange={(v) => set(f.key, v)}
+              className="mt-0.5 shrink-0"
+            />
+            <div className="flex-1 min-w-0">
+              <Label htmlFor={f.key} className="text-sm font-medium cursor-pointer">
+                {f.label}
+              </Label>
+              <p className="text-xs text-muted-foreground mt-0.5 leading-snug">
+                {f.description}
+              </p>
+              {/* Silence threshold sub-input for utterance segmentation */}
+              {f.key === "utterances" && options.utterances && (
+                <div className="flex items-center gap-2 mt-2">
+                  <Label
+                    htmlFor="silenceThreshold"
+                    className="text-xs text-muted-foreground whitespace-nowrap"
+                  >
+                    Silence Threshold (s)
+                  </Label>
+                  <Input
+                    id="silenceThreshold"
+                    type="number"
+                    min={0.1}
+                    max={10}
+                    step={0.1}
+                    value={options.silenceThreshold}
+                    onChange={(e) =>
+                      set("silenceThreshold", parseFloat(e.target.value) || 0.8)
+                    }
+                    className="h-7 w-20 text-xs"
+                  />
+                </div>
+              )}
+            </div>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+</file>
+
+<file path="src/components/FileUploader.tsx">
+"use client";
+
+import { useCallback, useRef, useState } from "react";
+import { UploadCloud, X, FileAudio, FileVideo } from "lucide-react";
+import { Button } from "@/components/ui/button";
+
+const ACCEPTED_TYPES = [
+  "audio/mp3",
+  "audio/mpeg",
+  "audio/wav",
+  "audio/x-wav",
+  "audio/m4a",
+  "audio/mp4",
+  "audio/webm",
+  "video/mp4",
+  "video/quicktime",
+  "video/webm",
+];
+
+const ACCEPTED_EXTENSIONS = [".mp4", ".mov", ".mp3", ".wav", ".m4a", ".webm"];
+
+function formatBytes(bytes: number) {
+  if (bytes === 0) return "0 B";
+  const k = 1024;
+  const sizes = ["B", "KB", "MB", "GB"];
+  const i = Math.floor(Math.log(bytes) / Math.log(k));
+  return `${(bytes / Math.pow(k, i)).toFixed(1)} ${sizes[i]}`;
+}
+
+function formatDuration(secs: number) {
+  const m = Math.floor(secs / 60);
+  const s = Math.floor(secs % 60);
+  return `${m}:${s.toString().padStart(2, "0")}`;
+}
+
+interface FileUploaderProps {
+  onFileChange: (file: File | null) => void;
+}
+
+export function FileUploader({ onFileChange }: FileUploaderProps) {
+  const [file, setFile] = useState<File | null>(null);
+  const [duration, setDuration] = useState<number | null>(null);
+  const [dragging, setDragging] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [truncated, setTruncated] = useState(false);
+  const inputRef = useRef<HTMLInputElement>(null);
+  const mediaRef = useRef<HTMLAudioElement | HTMLVideoElement | null>(null);
+  const objectUrlRef = useRef<string | null>(null);
+
+  const handleFile = useCallback(
+    (f: File) => {
+      setError(null);
+      setTruncated(false);
+
+      const MAX = 500 * 1024 * 1024;
+      const isVideo = f.type.startsWith("video/");
+
+      if (f.size > MAX && isVideo) {
+        setError(
+          "Video files larger than 500 MB are not supported. Please trim your video or export audio only before uploading."
+        );
+        return;
+      }
+
+      let processedFile = f;
+      if (f.size > MAX) {
+        // Audio-only: slice to first 500 MB (stream formats degrade gracefully)
+        const sliced = f.slice(0, MAX, f.type);
+        processedFile = new File([sliced], f.name, { type: f.type });
+        setTruncated(true);
+      }
+
+      const ext = "." + processedFile.name.split(".").pop()?.toLowerCase();
+      const validMime = ACCEPTED_TYPES.includes(processedFile.type);
+      const validExt = ACCEPTED_EXTENSIONS.includes(ext);
+
+      if (!validMime && !validExt) {
+        setError("Unsupported file type. Please upload audio or video.");
+        return;
+      }
+
+      // Revoke previous object URL
+      if (objectUrlRef.current) {
+        URL.revokeObjectURL(objectUrlRef.current);
+      }
+
+      const url = URL.createObjectURL(processedFile);
+      objectUrlRef.current = url;
+
+      setFile(processedFile);
+      setDuration(null);
+      onFileChange(processedFile);
+
+      // Load metadata to get duration
+      const media = processedFile.type.startsWith("video/")
+        ? document.createElement("video")
+        : document.createElement("audio");
+      media.src = url;
+      media.preload = "metadata";
+      media.onloadedmetadata = () => {
+        setDuration(media.duration);
+      };
+      mediaRef.current = media;
+    },
+    [onFileChange]
+  );
+
+  const handleDrop = useCallback(
+    (e: React.DragEvent) => {
+      e.preventDefault();
+      setDragging(false);
+      const dropped = e.dataTransfer.files[0];
+      if (dropped) handleFile(dropped);
+    },
+    [handleFile]
+  );
+
+  const handleInputChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const selected = e.target.files?.[0];
+    if (selected) handleFile(selected);
+  };
+
+  const handleRemove = () => {
+    setFile(null);
+    setDuration(null);
+    setError(null);
+    setTruncated(false);
+    if (objectUrlRef.current) {
+      URL.revokeObjectURL(objectUrlRef.current);
+      objectUrlRef.current = null;
+    }
+    if (inputRef.current) inputRef.current.value = "";
+    onFileChange(null);
+  };
+
+  const isVideo = file?.type.startsWith("video/");
+
+  return (
+    <div className="space-y-3">
+      {!file ? (
+        <div
+          className={`border-2 border-dashed rounded-xl p-8 text-center cursor-pointer transition-colors ${
+            dragging
+              ? "border-blue-500 bg-blue-50 dark:bg-blue-950/20"
+              : "border-muted-foreground/30 hover:border-blue-400 hover:bg-muted/40"
+          }`}
+          onDragOver={(e) => {
+            e.preventDefault();
+            setDragging(true);
+          }}
+          onDragLeave={() => setDragging(false)}
+          onDrop={handleDrop}
+          onClick={() => inputRef.current?.click()}
+        >
+          <UploadCloud className="mx-auto h-10 w-10 text-muted-foreground mb-3" />
+          <p className="text-sm font-medium text-foreground">
+            Drag & drop or{" "}
+            <span className="text-blue-500 underline underline-offset-2">
+              browse
+            </span>
+          </p>
+          <p className="text-xs text-muted-foreground mt-1">
+            Supports: MP4, MOV, MP3, WAV, M4A, WEBM · Max 500 MB
+          </p>
+          <input
+            ref={inputRef}
+            type="file"
+            className="hidden"
+            accept={ACCEPTED_EXTENSIONS.join(",")}
+            onChange={handleInputChange}
+          />
+        </div>
+      ) : (
+        <div className="border rounded-xl p-4 space-y-3">
+          {/* File info row */}
+          <div className="flex items-start gap-3">
+            <div className="p-2 rounded-lg bg-blue-100 dark:bg-blue-900/30 shrink-0">
+              {isVideo ? (
+                <FileVideo className="h-5 w-5 text-blue-600" />
+              ) : (
+                <FileAudio className="h-5 w-5 text-blue-600" />
+              )}
+            </div>
+            <div className="flex-1 min-w-0">
+              <p className="text-sm font-medium truncate">{file.name}</p>
+              <p className="text-xs text-muted-foreground">
+                {formatBytes(file.size)}
+                {duration !== null && ` · ${formatDuration(duration)}`}
+              </p>
+            </div>
+            <Button
+              variant="ghost"
+              size="icon"
+              className="h-7 w-7 shrink-0"
+              onClick={handleRemove}
+            >
+              <X className="h-4 w-4" />
+            </Button>
+          </div>
+
+          {/* Audio player */}
+          {objectUrlRef.current && (
+            <audio
+              controls
+              src={objectUrlRef.current}
+              className="w-full h-9 rounded"
+            />
+          )}
+        </div>
+      )}
+
+      {error && <p className="text-xs text-destructive">{error}</p>}
+      {truncated && (
+        <p className="text-xs text-amber-600 dark:text-amber-400">
+          ⚠️ File is larger than 500 MB — only the first 500 MB will be transcribed.
+        </p>
+      )}
+    </div>
+  );
+}
+</file>
+
+<file path="src/components/MainWorkspace.tsx">
+"use client";
+
+import { useState } from "react";
+import { toast } from "sonner";
+import { Loader2, Wand2 } from "lucide-react";
+import { FileUploader } from "@/components/FileUploader";
+import { ProviderSelector } from "@/components/ProviderSelector";
+import { FeatureOptions } from "@/components/FeatureOptions";
+import { ResultsTabs } from "@/components/ResultsTabs";
+import { Button } from "@/components/ui/button";
+import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { TranscriptionOptions, TranscriptionResponse } from "@/lib/types";
+
+const DEFAULT_OPTIONS: TranscriptionOptions = {
+  provider: "deepgram",
+  summarize: false,
+  topics: false,
+  smartFormat: true,
+  punctuation: true,
+  paragraphs: false,
+  utterances: false,
+  silenceThreshold: 0.8,
+  profanityFilter: false,
+  redact: false,
+  diarize: false,
+  fillerWords: false,
+};
+
+const STATUS_MESSAGES = [
+  "Uploading media...",
+  "Calling API...",
+  "Processing audio...",
+  "Parsing intelligence...",
+  "Almost done...",
+];
+
+export default function MainWorkspace() {
+  const [file, setFile] = useState<File | null>(null);
+  const [options, setOptions] = useState<TranscriptionOptions>(DEFAULT_OPTIONS);
+  const [loading, setLoading] = useState(false);
+  const [statusIndex, setStatusIndex] = useState(0);
+  const [result, setResult] = useState<TranscriptionResponse | null>(null);
+
+  const handleTranscribe = async () => {
+    if (!file) {
+      toast.error("Please upload a file first.");
+      return;
+    }
+
+    setLoading(true);
+    setResult(null);
+    setStatusIndex(0);
+
+    // Cycle through status messages
+    const interval = setInterval(() => {
+      setStatusIndex((i) => Math.min(i + 1, STATUS_MESSAGES.length - 1));
+    }, 3500);
+
+    try {
+      const fd = new FormData();
+      fd.append("file", file);
+      fd.append("provider", options.provider);
+      fd.append("summarize", String(options.summarize));
+      fd.append("topics", String(options.topics));
+      fd.append("smartFormat", String(options.smartFormat));
+      fd.append("punctuation", String(options.punctuation));
+      fd.append("paragraphs", String(options.paragraphs));
+      fd.append("utterances", String(options.utterances));
+      fd.append("silenceThreshold", String(options.silenceThreshold));
+      fd.append("profanityFilter", String(options.profanityFilter));
+      fd.append("redact", String(options.redact));
+      fd.append("diarize", String(options.diarize));
+      fd.append("fillerWords", String(options.fillerWords));
+
+      const res = await fetch("/api/transcribe", {
+        method: "POST",
+        body: fd,
+      });
+
+      if (!res.ok) {
+        const data = await res.json().catch(() => ({}));
+        const msg = data.error || `Request failed (${res.status})`;
+
+        if (res.status === 400 && msg.includes("API_KEY")) {
+          toast.error("API key not configured", {
+            description: msg,
+          });
+        } else if (res.status === 413) {
+          toast.error("File too large", {
+            description: msg,
+          });
+        } else if (res.status === 504) {
+          toast.error("Request timed out", {
+            description: msg,
+          });
+        } else {
+          toast.error("Transcription failed", { description: msg });
+        }
+        return;
+      }
+
+      const data: TranscriptionResponse = await res.json();
+      setResult(data);
+      toast.success("Transcription complete!", {
+        description: `Processed by ${data.provider === "deepgram" ? "Deepgram Nova-3" : "AssemblyAI Universal-1"}`,
+      });
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : "Network error";
+      toast.error("Request failed", { description: msg });
+    } finally {
+      clearInterval(interval);
+      setLoading(false);
+      setStatusIndex(0);
+    }
+  };
+
+  return (
+    <div className="grid grid-cols-1 lg:grid-cols-[420px_1fr] gap-6 items-start">
+      {/* ── Left column: Controls ── */}
+      <div className="space-y-5">
+        {/* File upload */}
+        <Card>
+          <CardHeader className="pb-3">
+            <CardTitle className="text-base">Upload Media</CardTitle>
+          </CardHeader>
+          <CardContent>
+            <FileUploader onFileChange={setFile} />
+          </CardContent>
+        </Card>
+
+        {/* Provider selector */}
+        <Card>
+          <CardHeader className="pb-3">
+            <CardTitle className="text-base">Provider</CardTitle>
+          </CardHeader>
+          <CardContent>
+            <ProviderSelector
+              value={options.provider}
+              onChange={(p) => setOptions({ ...options, provider: p })}
+            />
+          </CardContent>
+        </Card>
+
+        {/* Feature options */}
+        <Card>
+          <CardHeader className="pb-3">
+            <CardTitle className="text-base">Feature Options</CardTitle>
+          </CardHeader>
+          <CardContent>
+            <FeatureOptions options={options} onChange={setOptions} />
+          </CardContent>
+        </Card>
+
+        {/* Transcribe button */}
+        <Button
+          className="w-full gap-2"
+          size="lg"
+          onClick={handleTranscribe}
+          disabled={loading || !file}
+        >
+          {loading ? (
+            <>
+              <Loader2 className="h-4 w-4 animate-spin" />
+              {STATUS_MESSAGES[statusIndex]}
+            </>
+          ) : (
+            <>
+              <Wand2 className="h-4 w-4" />
+              Transcribe
+            </>
+          )}
+        </Button>
+      </div>
+
+      {/* ── Right column: Results ── */}
+      <div className="min-h-[400px]">
+        {loading && (
+          <Card className="h-full flex items-center justify-center min-h-[400px]">
+            <CardContent className="flex flex-col items-center gap-4 py-12">
+              <div className="relative">
+                <div className="h-14 w-14 rounded-full border-4 border-blue-200 dark:border-blue-900" />
+                <Loader2 className="h-14 w-14 animate-spin text-blue-600 absolute inset-0" />
+              </div>
+              <div className="text-center">
+                <p className="text-sm font-medium">{STATUS_MESSAGES[statusIndex]}</p>
+                <p className="text-xs text-muted-foreground mt-1">
+                  This may take a moment depending on file length.
+                </p>
+              </div>
+            </CardContent>
+          </Card>
+        )}
+
+        {!loading && !result && (
+          <Card className="min-h-[400px] flex items-center justify-center border-dashed">
+            <CardContent className="text-center py-12">
+              <div className="rounded-full bg-muted p-4 inline-flex mb-4">
+                <Wand2 className="h-8 w-8 text-muted-foreground" />
+              </div>
+              <p className="text-sm font-medium text-muted-foreground">
+                Results will appear here
+              </p>
+              <p className="text-xs text-muted-foreground mt-1">
+                Upload a file and click Transcribe to get started.
+              </p>
+            </CardContent>
+          </Card>
+        )}
+
+        {!loading && result && <ResultsTabs result={result} />}
+      </div>
+    </div>
+  );
+}
+</file>
+
+<file path="src/components/ProviderSelector.tsx">
+"use client";
+
+import { ProviderType } from "@/lib/types";
+
+interface ProviderSelectorProps {
+  value: ProviderType;
+  onChange: (value: ProviderType) => void;
+}
+
+const providers: { id: ProviderType; label: string; sub: string }[] = [
+  {
+    id: "deepgram",
+    label: "Deepgram",
+    sub: "Nova-3",
+  },
+  {
+    id: "assemblyai",
+    label: "AssemblyAI",
+    sub: "Universal-1",
+  },
+];
+
+export function ProviderSelector({ value, onChange }: ProviderSelectorProps) {
+  return (
+    <div className="flex rounded-lg border overflow-hidden">
+      {providers.map((p) => {
+        const selected = value === p.id;
+        return (
+          <button
+            key={p.id}
+            type="button"
+            onClick={() => onChange(p.id)}
+            className={`flex-1 py-2.5 px-4 text-sm transition-colors flex flex-col items-center gap-0.5 ${
+              selected
+                ? "bg-blue-600 text-white font-semibold"
+                : "bg-background text-muted-foreground hover:bg-muted"
+            }`}
+          >
+            <span>{p.label}</span>
+            <span
+              className={`text-xs font-normal ${
+                selected ? "text-blue-100" : "text-muted-foreground"
+              }`}
+            >
+              {p.sub}
+            </span>
+          </button>
+        );
+      })}
+    </div>
+  );
+}
+</file>
+
+<file path="src/components/ResultsTabs.tsx">
+"use client";
+
+import { useState } from "react";
+import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
+import { Badge } from "@/components/ui/badge";
+import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import {
+  Accordion,
+  AccordionContent,
+  AccordionItem,
+  AccordionTrigger,
+} from "@/components/ui/accordion";
+import { Switch } from "@/components/ui/switch";
+import { Label } from "@/components/ui/label";
+import { TranscriptionResponse } from "@/lib/types";
+import { AlertTriangle, FileText, Mic2, Brain, Code2 } from "lucide-react";
+
+function formatTime(secs: number) {
+  const m = Math.floor(secs / 60);
+  const s = Math.floor(secs % 60);
+  return `${m}:${s.toString().padStart(2, "0")}`;
+}
+
+const SPEAKER_COLORS = [
+  "bg-blue-100 text-blue-800 dark:bg-blue-900/40 dark:text-blue-300",
+  "bg-purple-100 text-purple-800 dark:bg-purple-900/40 dark:text-purple-300",
+  "bg-emerald-100 text-emerald-800 dark:bg-emerald-900/40 dark:text-emerald-300",
+  "bg-orange-100 text-orange-800 dark:bg-orange-900/40 dark:text-orange-300",
+  "bg-pink-100 text-pink-800 dark:bg-pink-900/40 dark:text-pink-300",
+];
+
+function getSpeakerColor(speaker: string) {
+  const num = parseInt(speaker.replace(/\D/g, "")) || 0;
+  return SPEAKER_COLORS[num % SPEAKER_COLORS.length];
+}
+
+interface ResultsTabsProps {
+  result: TranscriptionResponse;
+}
+
+export function ResultsTabs({ result }: ResultsTabsProps) {
+  const { normalized } = result;
+  const [showFillers, setShowFillers] = useState(true);
+
+  const transcriptText = showFillers
+    ? normalized.transcript
+    : normalized.transcript.replace(/\b(uh|um|uh-huh|mm-hmm|hmm)\b/gi, "").replace(/\s+/g, " ").trim();
+
+  const displayParagraphs =
+    normalized.paragraphs.length > 0
+      ? normalized.paragraphs
+      : [transcriptText];
+
+  return (
+    <Tabs defaultValue="transcript" className="w-full">
+      <TabsList className="flex w-full mb-4 h-auto">
+        <TabsTrigger value="transcript" className="gap-1.5 text-xs sm:text-sm">
+          <FileText className="h-3.5 w-3.5" />
+          <span className="hidden sm:inline">Transcript</span>
+          <span className="sm:hidden">Text</span>
+        </TabsTrigger>
+        <TabsTrigger value="diarization" className="gap-1.5 text-xs sm:text-sm">
+          <Mic2 className="h-3.5 w-3.5" />
+          <span className="hidden sm:inline">Diarization</span>
+          <span className="sm:hidden">Speakers</span>
+        </TabsTrigger>
+        <TabsTrigger value="intelligence" className="gap-1.5 text-xs sm:text-sm">
+          <Brain className="h-3.5 w-3.5" />
+          <span className="hidden sm:inline">Intelligence</span>
+          <span className="sm:hidden">AI</span>
+        </TabsTrigger>
+        <TabsTrigger value="raw" className="gap-1.5 text-xs sm:text-sm">
+          <Code2 className="h-3.5 w-3.5" />
+          <span>Raw JSON</span>
+        </TabsTrigger>
+      </TabsList>
+
+      {/* ── Transcript ── */}
+      <TabsContent value="transcript">
+        <Card>
+          <CardHeader className="pb-3 flex flex-row items-center justify-between">
+            <CardTitle className="text-base">Transcript</CardTitle>
+            <div className="flex items-center gap-2">
+              <Switch
+                id="filler-toggle"
+                checked={showFillers}
+                onCheckedChange={setShowFillers}
+              />
+              <Label htmlFor="filler-toggle" className="text-xs cursor-pointer">
+                Show filler words
+              </Label>
+            </div>
+          </CardHeader>
+          <CardContent>
+            {normalized.transcript ? (
+              <div className="space-y-4">
+                {displayParagraphs.map((para, i) => (
+                  <p key={i} className="text-sm leading-relaxed text-foreground">
+                    {para}
+                  </p>
+                ))}
+              </div>
+            ) : (
+              <p className="text-sm text-muted-foreground italic">
+                No transcript available.
+              </p>
+            )}
+          </CardContent>
+        </Card>
+      </TabsContent>
+
+      {/* ── Diarization & Utterances ── */}
+      <TabsContent value="diarization">
+        <Card>
+          <CardHeader className="pb-3">
+            <CardTitle className="text-base">Diarization & Utterances</CardTitle>
+          </CardHeader>
+          <CardContent>
+            {normalized.utterances.length > 0 ? (
+              <div className="space-y-2">
+                {normalized.utterances.map((u, i) => (
+                  <div
+                    key={i}
+                    className="flex gap-3 rounded-lg p-3 border hover:bg-muted/30 transition-colors"
+                  >
+                    <span
+                      className={`text-xs font-semibold px-2 py-0.5 rounded-full h-fit whitespace-nowrap mt-0.5 ${getSpeakerColor(
+                        u.speaker
+                      )}`}
+                    >
+                      {u.speaker}
+                    </span>
+                    <div className="flex-1 min-w-0">
+                      <p className="text-sm leading-relaxed">{u.text}</p>
+                      <p className="text-xs text-muted-foreground mt-1">
+                        {formatTime(u.start)} → {formatTime(u.end)}
+                      </p>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            ) : (
+              <p className="text-sm text-muted-foreground italic">
+                No utterance / diarization data. Enable Diarization or Utterance
+                Segmentation to see results here.
+              </p>
+            )}
+          </CardContent>
+        </Card>
+      </TabsContent>
+
+      {/* ── Audio Intelligence ── */}
+      <TabsContent value="intelligence">
+        <div className="space-y-4">
+          {/* Summary */}
+          <Card>
+            <CardHeader className="pb-2">
+              <CardTitle className="text-base">Summary</CardTitle>
+            </CardHeader>
+            <CardContent>
+              {normalized.summary ? (
+                <div className="text-sm leading-relaxed whitespace-pre-line">
+                  {normalized.summary}
+                </div>
+              ) : (
+                <p className="text-sm text-muted-foreground italic">
+                  No summary available. Enable Summarization to see results here.
+                </p>
+              )}
+            </CardContent>
+          </Card>
+
+          {/* Topics */}
+          <Card>
+            <CardHeader className="pb-2">
+              <CardTitle className="text-base">Detected Topics</CardTitle>
+            </CardHeader>
+            <CardContent>
+              {normalized.topics.length > 0 ? (
+                <div className="flex flex-wrap gap-2">
+                  {normalized.topics.map((t, i) => (
+                    <Badge key={i} variant="secondary" className="text-xs">
+                      {t}
+                    </Badge>
+                  ))}
+                </div>
+              ) : (
+                <p className="text-sm text-muted-foreground italic">
+                  No topics detected. Enable Topic Detection to see results here.
+                </p>
+              )}
+            </CardContent>
+          </Card>
+
+          {/* PII / Redaction */}
+          <Card>
+            <CardHeader className="pb-2">
+              <CardTitle className="text-base flex items-center gap-2">
+                <AlertTriangle className="h-4 w-4 text-amber-500" />
+                Redacted PII Entities
+              </CardTitle>
+            </CardHeader>
+            <CardContent>
+              {normalized.piiEntities.length > 0 ? (
+                <div className="flex flex-wrap gap-2">
+                  {normalized.piiEntities.map((e, i) => (
+                    <Badge
+                      key={i}
+                      variant="outline"
+                      className="text-xs border-amber-400 text-amber-700 dark:text-amber-400"
+                    >
+                      {e}
+                    </Badge>
+                  ))}
+                </div>
+              ) : (
+                <p className="text-sm text-muted-foreground italic">
+                  No PII entities found. Enable Redaction to see results here.
+                </p>
+              )}
+            </CardContent>
+          </Card>
+        </div>
+      </TabsContent>
+
+      {/* ── Raw JSON ── */}
+      <TabsContent value="raw">
+        <Card>
+          <CardHeader className="pb-2">
+            <CardTitle className="text-base">Raw JSON Payload</CardTitle>
+          </CardHeader>
+          <CardContent className="p-0">
+            <Accordion defaultValue={["json"]}>
+              <AccordionItem value="json" className="border-0">
+                <AccordionTrigger className="px-6 py-3 text-sm hover:no-underline">
+                  View full{" "}
+                  {result.provider === "deepgram" ? "Deepgram" : "AssemblyAI"}{" "}
+                  response object
+                </AccordionTrigger>
+                <AccordionContent className="px-0 pb-0">
+                  <div className="overflow-auto max-h-[500px] rounded-b-lg bg-muted/50 dark:bg-muted/20">
+                    <pre className="text-xs p-6 leading-relaxed font-mono text-foreground">
+                      {JSON.stringify(result.raw, null, 2)}
+                    </pre>
+                  </div>
+                </AccordionContent>
+              </AccordionItem>
+            </Accordion>
+          </CardContent>
+        </Card>
+      </TabsContent>
+    </Tabs>
+  );
+}
+</file>
+
+<file path="src/lib/types.ts">
+export type ProviderType = "deepgram" | "assemblyai";
+
+export interface TranscriptionOptions {
+  provider: ProviderType;
+  summarize: boolean;
+  topics: boolean;
+  smartFormat: boolean;
+  punctuation: boolean;
+  paragraphs: boolean;
+  utterances: boolean;
+  silenceThreshold: number;
+  profanityFilter: boolean;
+  redact: boolean;
+  diarize: boolean;
+  fillerWords: boolean;
+}
+
+export interface SpeakerSegment {
+  speaker: string;
+  start: number;
+  end: number;
+  text: string;
+}
+
+export interface NormalizedResult {
+  transcript: string;
+  paragraphs: string[];
+  summary: string | null;
+  topics: string[];
+  piiEntities: string[];
+  utterances: SpeakerSegment[];
+}
+
+export interface TranscriptionResponse {
+  provider: ProviderType;
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  raw: any;
+  normalized: NormalizedResult;
+}
+</file>
+
+<file path="src/lib/utils.ts">
+export { cn } from "cn"
+</file>
+
+<file path="components.json">
+{
+  "$schema": "https://ui.shadcn.com/schema.json",
+  "style": "base-nova",
+  "rsc": true,
+  "tsx": true,
+  "tailwind": {
+    "config": "",
+    "css": "src/app/globals.css",
+    "baseColor": "neutral",
+    "cssVariables": true,
+    "prefix": ""
+  },
+  "iconLibrary": "lucide",
+  "rtl": false,
+  "aliases": {
+    "components": "@/components",
+    "utils": "@/lib/utils",
+    "ui": "@/components/ui",
+    "lib": "@/lib",
+    "hooks": "@/hooks"
+  },
+  "menuColor": "default",
+  "menuAccent": "subtle",
+  "registries": {}
+}
+</file>
+
+<file path="public/file.svg">
+<svg fill="none" viewBox="0 0 16 16" xmlns="http://www.w3.org/2000/svg"><path d="M14.5 13.5V5.41a1 1 0 0 0-.3-.7L9.8.29A1 1 0 0 0 9.08 0H1.5v13.5A2.5 2.5 0 0 0 4 16h8a2.5 2.5 0 0 0 2.5-2.5m-1.5 0v-7H8v-5H3v12a1 1 0 0 0 1 1h8a1 1 0 0 0 1-1M9.5 5V2.12L12.38 5zM5.13 5h-.62v1.25h2.12V5zm-.62 3h7.12v1.25H4.5zm.62 3h-.62v1.25h7.12V11z" clip-rule="evenodd" fill="#666" fill-rule="evenodd"/></svg>
+</file>
+
+<file path="public/globe.svg">
+<svg fill="none" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16"><g clip-path="url(#a)"><path fill-rule="evenodd" clip-rule="evenodd" d="M10.27 14.1a6.5 6.5 0 0 0 3.67-3.45q-1.24.21-2.7.34-.31 1.83-.97 3.1M8 16A8 8 0 1 0 8 0a8 8 0 0 0 0 16m.48-1.52a7 7 0 0 1-.96 0H7.5a4 4 0 0 1-.84-1.32q-.38-.89-.63-2.08a40 40 0 0 0 3.92 0q-.25 1.2-.63 2.08a4 4 0 0 1-.84 1.31zm2.94-4.76q1.66-.15 2.95-.43a7 7 0 0 0 0-2.58q-1.3-.27-2.95-.43a18 18 0 0 1 0 3.44m-1.27-3.54a17 17 0 0 1 0 3.64 39 39 0 0 1-4.3 0 17 17 0 0 1 0-3.64 39 39 0 0 1 4.3 0m1.1-1.17q1.45.13 2.69.34a6.5 6.5 0 0 0-3.67-3.44q.65 1.26.98 3.1M8.48 1.5l.01.02q.41.37.84 1.31.38.89.63 2.08a40 40 0 0 0-3.92 0q.25-1.2.63-2.08a4 4 0 0 1 .85-1.32 7 7 0 0 1 .96 0m-2.75.4a6.5 6.5 0 0 0-3.67 3.44 29 29 0 0 1 2.7-.34q.31-1.83.97-3.1M4.58 6.28q-1.66.16-2.95.43a7 7 0 0 0 0 2.58q1.3.27 2.95.43a18 18 0 0 1 0-3.44m.17 4.71q-1.45-.12-2.69-.34a6.5 6.5 0 0 0 3.67 3.44q-.65-1.27-.98-3.1" fill="#666"/></g><defs><clipPath id="a"><path fill="#fff" d="M0 0h16v16H0z"/></clipPath></defs></svg>
+</file>
+
+<file path="public/next.svg">
+<svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 394 80"><path fill="#000" d="M262 0h68.5v12.7h-27.2v66.6h-13.6V12.7H262V0ZM149 0v12.7H94v20.4h44.3v12.6H94v21h55v12.6H80.5V0h68.7zm34.3 0h-17.8l63.8 79.4h17.9l-32-39.7 32-39.6h-17.9l-23 28.6-23-28.6zm18.3 56.7-9-11-27.1 33.7h17.8l18.3-22.7z"/><path fill="#000" d="M81 79.3 17 0H0v79.3h13.6V17l50.2 62.3H81Zm252.6-.4c-1 0-1.8-.4-2.5-1s-1.1-1.6-1.1-2.6.3-1.8 1-2.5 1.6-1 2.6-1 1.8.3 2.5 1a3.4 3.4 0 0 1 .6 4.3 3.7 3.7 0 0 1-3 1.8zm23.2-33.5h6v23.3c0 2.1-.4 4-1.3 5.5a9.1 9.1 0 0 1-3.8 3.5c-1.6.8-3.5 1.3-5.7 1.3-2 0-3.7-.4-5.3-1s-2.8-1.8-3.7-3.2c-.9-1.3-1.4-3-1.4-5h6c.1.8.3 1.6.7 2.2s1 1.2 1.6 1.5c.7.4 1.5.5 2.4.5 1 0 1.8-.2 2.4-.6a4 4 0 0 0 1.6-1.8c.3-.8.5-1.8.5-3V45.5zm30.9 9.1a4.4 4.4 0 0 0-2-3.3 7.5 7.5 0 0 0-4.3-1.1c-1.3 0-2.4.2-3.3.5-.9.4-1.6 1-2 1.6a3.5 3.5 0 0 0-.3 4c.3.5.7.9 1.3 1.2l1.8 1 2 .5 3.2.8c1.3.3 2.5.7 3.7 1.2a13 13 0 0 1 3.2 1.8 8.1 8.1 0 0 1 3 6.5c0 2-.5 3.7-1.5 5.1a10 10 0 0 1-4.4 3.5c-1.8.8-4.1 1.2-6.8 1.2-2.6 0-4.9-.4-6.8-1.2-2-.8-3.4-2-4.5-3.5a10 10 0 0 1-1.7-5.6h6a5 5 0 0 0 3.5 4.6c1 .4 2.2.6 3.4.6 1.3 0 2.5-.2 3.5-.6 1-.4 1.8-1 2.4-1.7a4 4 0 0 0 .8-2.4c0-.9-.2-1.6-.7-2.2a11 11 0 0 0-2.1-1.4l-3.2-1-3.8-1c-2.8-.7-5-1.7-6.6-3.2a7.2 7.2 0 0 1-2.4-5.7 8 8 0 0 1 1.7-5 10 10 0 0 1 4.3-3.5c2-.8 4-1.2 6.4-1.2 2.3 0 4.4.4 6.2 1.2 1.8.8 3.2 2 4.3 3.4 1 1.4 1.5 3 1.5 5h-5.8z"/></svg>
+</file>
+
+<file path="public/vercel.svg">
+<svg fill="none" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1155 1000"><path d="m577.3 0 577.4 1000H0z" fill="#fff"/></svg>
+</file>
+
+<file path="public/window.svg">
+<svg fill="none" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16"><path fill-rule="evenodd" clip-rule="evenodd" d="M1.5 2.5h13v10a1 1 0 0 1-1 1h-11a1 1 0 0 1-1-1zM0 1h16v11.5a2.5 2.5 0 0 1-2.5 2.5h-11A2.5 2.5 0 0 1 0 12.5zm3.75 4.5a.75.75 0 1 0 0-1.5.75.75 0 0 0 0 1.5M7 4.75a.75.75 0 1 1-1.5 0 .75.75 0 0 1 1.5 0m1.75.75a.75.75 0 1 0 0-1.5.75.75 0 0 0 0 1.5" fill="#666"/></svg>
+</file>
+
+<file path="src/app/globals.css">
+@import "tailwindcss";
+@import "tw-animate-css";
+@import "shadcn/tailwind.css";
+
+@custom-variant dark (&:is(.dark *));
+
+@theme inline {
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --font-sans: var(--font-sans);
+  --font-mono: var(--font-geist-mono);
+  --font-heading: var(--font-sans);
+  --color-sidebar-ring: var(--sidebar-ring);
+  --color-sidebar-border: var(--sidebar-border);
+  --color-sidebar-accent-foreground: var(--sidebar-accent-foreground);
+  --color-sidebar-accent: var(--sidebar-accent);
+  --color-sidebar-primary-foreground: var(--sidebar-primary-foreground);
+  --color-sidebar-primary: var(--sidebar-primary);
+  --color-sidebar-foreground: var(--sidebar-foreground);
+  --color-sidebar: var(--sidebar);
+  --color-chart-5: var(--chart-5);
+  --color-chart-4: var(--chart-4);
+  --color-chart-3: var(--chart-3);
+  --color-chart-2: var(--chart-2);
+  --color-chart-1: var(--chart-1);
+  --color-ring: var(--ring);
+  --color-input: var(--input);
+  --color-border: var(--border);
+  --color-destructive: var(--destructive);
+  --color-accent-foreground: var(--accent-foreground);
+  --color-accent: var(--accent);
+  --color-muted-foreground: var(--muted-foreground);
+  --color-muted: var(--muted);
+  --color-secondary-foreground: var(--secondary-foreground);
+  --color-secondary: var(--secondary);
+  --color-primary-foreground: var(--primary-foreground);
+  --color-primary: var(--primary);
+  --color-popover-foreground: var(--popover-foreground);
+  --color-popover: var(--popover);
+  --color-card-foreground: var(--card-foreground);
+  --color-card: var(--card);
+  --radius-sm: calc(var(--radius) * 0.6);
+  --radius-md: calc(var(--radius) * 0.8);
+  --radius-lg: var(--radius);
+  --radius-xl: calc(var(--radius) * 1.4);
+  --radius-2xl: calc(var(--radius) * 1.8);
+  --radius-3xl: calc(var(--radius) * 2.2);
+  --radius-4xl: calc(var(--radius) * 2.6);
+}
+
+:root {
+  --background: oklch(1 0 0);
+  --foreground: oklch(0.145 0 0);
+  --card: oklch(1 0 0);
+  --card-foreground: oklch(0.145 0 0);
+  --popover: oklch(1 0 0);
+  --popover-foreground: oklch(0.145 0 0);
+  --primary: oklch(0.205 0 0);
+  --primary-foreground: oklch(0.985 0 0);
+  --secondary: oklch(0.97 0 0);
+  --secondary-foreground: oklch(0.205 0 0);
+  --muted: oklch(0.97 0 0);
+  --muted-foreground: oklch(0.556 0 0);
+  --accent: oklch(0.97 0 0);
+  --accent-foreground: oklch(0.205 0 0);
+  --destructive: oklch(0.577 0.245 27.325);
+  --border: oklch(0.922 0 0);
+  --input: oklch(0.922 0 0);
+  --ring: oklch(0.708 0 0);
+  --chart-1: oklch(0.87 0 0);
+  --chart-2: oklch(0.556 0 0);
+  --chart-3: oklch(0.439 0 0);
+  --chart-4: oklch(0.371 0 0);
+  --chart-5: oklch(0.269 0 0);
+  --radius: 0.625rem;
+  --sidebar: oklch(0.985 0 0);
+  --sidebar-foreground: oklch(0.145 0 0);
+  --sidebar-primary: oklch(0.205 0 0);
+  --sidebar-primary-foreground: oklch(0.985 0 0);
+  --sidebar-accent: oklch(0.97 0 0);
+  --sidebar-accent-foreground: oklch(0.205 0 0);
+  --sidebar-border: oklch(0.922 0 0);
+  --sidebar-ring: oklch(0.708 0 0);
+}
+
+.dark {
+  --background: oklch(0.145 0 0);
+  --foreground: oklch(0.985 0 0);
+  --card: oklch(0.205 0 0);
+  --card-foreground: oklch(0.985 0 0);
+  --popover: oklch(0.205 0 0);
+  --popover-foreground: oklch(0.985 0 0);
+  --primary: oklch(0.922 0 0);
+  --primary-foreground: oklch(0.205 0 0);
+  --secondary: oklch(0.269 0 0);
+  --secondary-foreground: oklch(0.985 0 0);
+  --muted: oklch(0.269 0 0);
+  --muted-foreground: oklch(0.708 0 0);
+  --accent: oklch(0.269 0 0);
+  --accent-foreground: oklch(0.985 0 0);
+  --destructive: oklch(0.704 0.191 22.216);
+  --border: oklch(1 0 0 / 10%);
+  --input: oklch(1 0 0 / 15%);
+  --ring: oklch(0.556 0 0);
+  --chart-1: oklch(0.87 0 0);
+  --chart-2: oklch(0.556 0 0);
+  --chart-3: oklch(0.439 0 0);
+  --chart-4: oklch(0.371 0 0);
+  --chart-5: oklch(0.269 0 0);
+  --sidebar: oklch(0.205 0 0);
+  --sidebar-foreground: oklch(0.985 0 0);
+  --sidebar-primary: oklch(0.488 0.243 264.376);
+  --sidebar-primary-foreground: oklch(0.985 0 0);
+  --sidebar-accent: oklch(0.269 0 0);
+  --sidebar-accent-foreground: oklch(0.985 0 0);
+  --sidebar-border: oklch(1 0 0 / 10%);
+  --sidebar-ring: oklch(0.556 0 0);
+}
+
+@layer base {
+  * {
+    @apply border-border outline-ring/50;
+  }
+  body {
+    @apply bg-background text-foreground;
+  }
+  html {
+    @apply font-sans;
+  }
+}
+</file>
+
+<file path="src/app/layout.tsx">
+import type { Metadata } from "next";
+import { Geist, Geist_Mono } from "next/font/google";
+import { Toaster } from "sonner";
+import "./globals.css";
+
+const geistSans = Geist({
+  variable: "--font-geist-sans",
+  subsets: ["latin"],
+});
+
+const geistMono = Geist_Mono({
+  variable: "--font-geist-mono",
+  subsets: ["latin"],
+});
+
+export const metadata: Metadata = {
+  title: "Speech-to-Text Feature Sandbox",
+  description: "Compare Deepgram Nova-3 and AssemblyAI Universal-1 transcription features",
+};
+
+export default function RootLayout({ children }: LayoutProps<"/">) {
+  return (
+    <html
+      lang="en"
+      className={`${geistSans.variable} ${geistMono.variable} h-full antialiased`}
+    >
+      <body className="min-h-full flex flex-col">
+        {children}
+        <Toaster richColors position="bottom-right" />
+      </body>
+    </html>
+  );
+}
+</file>
+
+<file path="src/app/page.tsx">
+import { Suspense } from "react";
+import MainWorkspace from "@/components/MainWorkspace";
+import { ApiKeyIndicator } from "@/components/ApiKeyIndicator";
+import { Mic } from "lucide-react";
+
+export default function Home() {
+  const deepgramConfigured = !!process.env.DEEPGRAM_API_KEY;
+  const assemblyaiConfigured = !!process.env.ASSEMBLYAI_API_KEY;
+
+  return (
+    <div className="min-h-screen bg-background">
+      {/* Header */}
+      <header className="border-b bg-card sticky top-0 z-10">
+        <div className="max-w-7xl mx-auto px-4 sm:px-6 py-4 flex flex-col sm:flex-row sm:items-center gap-3 sm:justify-between">
+          <div className="flex items-center gap-3">
+            <div className="p-2 rounded-lg bg-blue-600 text-white">
+              <Mic className="h-5 w-5" />
+            </div>
+            <div>
+              <h1 className="text-base sm:text-lg font-bold leading-tight">
+                Speech-to-Text Feature Sandbox
+              </h1>
+              <p className="text-xs text-muted-foreground">
+                Deepgram vs. AssemblyAI
+              </p>
+            </div>
+          </div>
+          <ApiKeyIndicator
+            deepgramConfigured={deepgramConfigured}
+            assemblyaiConfigured={assemblyaiConfigured}
+          />
+        </div>
+      </header>
+
+      {/* Main workspace */}
+      <main className="max-w-7xl mx-auto px-4 sm:px-6 py-8">
+        <Suspense>
+          <MainWorkspace />
+        </Suspense>
+      </main>
+    </div>
+  );
+}
+</file>
+
+<file path=".gitignore">
+# See https://help.github.com/articles/ignoring-files/ for more about ignoring files.
+
+# dependencies
+/node_modules
+/.pnp
+.pnp.*
+.yarn/*
+!.yarn/patches
+!.yarn/plugins
+!.yarn/releases
+!.yarn/versions
+
+# testing
+/coverage
+
+# next.js
+/.next/
+/out/
+
+# production
+/build
+
+# misc
+.DS_Store
+*.pem
+
+# debug
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+.pnpm-debug.log*
+
+# env files (can opt-in for committing if needed)
+.env*
+
+# vercel
+.vercel
+
+# typescript
+*.tsbuildinfo
+next-env.d.ts
+</file>
+
+<file path="AGENTS.md">
+<!-- BEGIN:nextjs-agent-rules -->
+
+# This is NOT the Next.js you know
+
+This version has breaking changes — APIs, conventions, and file structure may all differ from your training data. Read the relevant guide in `node_modules/next/dist/docs/` (resolved from this file's directory; in monorepos the `next` package may not be visible from the repo root) before writing any code. Heed deprecation notices.
+
+This block is written and re-added by `next dev` — verify at `node_modules/next/dist/server/lib/generate-agent-files.js`. Removing it from a diff only re-creates the uncommitted change; committing it with your work keeps the tree clean.
+
+<!-- END:nextjs-agent-rules -->
+</file>
+
+<file path="CLAUDE.md">
+@AGENTS.md
+</file>
+
+<file path="next.config.ts">
+import type { NextConfig } from "next";
+
+const nextConfig: NextConfig = {
+  experimental: {
+    // Allow up to 510 MB request bodies (covers the 500 MB file + form overhead)
+    serverBodySizeLimit: "510mb",
+  },
+};
+
+export default nextConfig;
+</file>
+
+<file path="package.json">
+{
+  "name": "transcription-apis",
+  "version": "0.1.0",
+  "private": true,
+  "scripts": {
+    "dev": "next dev",
+    "build": "next build",
+    "start": "next start"
+  },
+  "dependencies": {
+    "@base-ui/react": "^1.8.0",
+    "@deepgram/sdk": "^5.14.0",
+    "assemblyai": "^4.41.5",
+    "class-variance-authority": "^0.7.1",
+    "cn": "^0.4.0",
+    "lucide-react": "^1.49.0",
+    "next": "16.3.8",
+    "react": "19.2.8",
+    "react-dom": "19.2.8",
+    "shadcn": "^4.21.1",
+    "sonner": "^2.0.8",
+    "tw-animate-css": "^1.4.0"
+  },
+  "devDependencies": {
+    "@tailwindcss/postcss": "^4",
+    "@types/node": "^20",
+    "@types/react": "^19",
+    "@types/react-dom": "^19",
+    "tailwindcss": "^4",
+    "typescript": "^5"
+  }
+}
+</file>
+
+<file path="postcss.config.mjs">
+const config = {
+  plugins: {
+    "@tailwindcss/postcss": {},
+  },
+};
+
+export default config;
+</file>
+
+<file path="README.md">
+This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
+
+## Getting Started
+
+First, run the development server:
+
+```bash
+npm run dev
+# or
+yarn dev
+# or
+pnpm dev
+# or
+bun dev
+```
+
+Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
+
+You can start editing the page by modifying `app/page.tsx`. The page auto-updates as you edit the file.
+
+This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.
+
+## Learn More
+
+To learn more about Next.js, take a look at the following resources:
+
+- [Next.js Documentation](https://nextjs.org/docs) - learn about Next.js features and API.
+- [Learn Next.js](https://nextjs.org/learn) - an interactive Next.js tutorial.
+
+You can check out [the Next.js GitHub repository](https://github.com/vercel/next.js) - your feedback and contributions are welcome!
+
+## Deploy on Vercel
+
+The easiest way to deploy your Next.js app is to use the [Vercel Platform](https://vercel.com/new?utm_medium=default-template&filter=next.js&utm_source=create-next-app&utm_campaign=create-next-app-readme) from the creators of Next.js.
+
+Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/building-your-application/deploying) for more details.
+</file>
+
+<file path="tsconfig.json">
+{
+  "compilerOptions": {
+    "target": "ES2017",
+    "lib": ["dom", "dom.iterable", "esnext"],
+    "allowJs": true,
+    "skipLibCheck": true,
+    "strict": true,
+    "noEmit": true,
+    "esModuleInterop": true,
+    "module": "esnext",
+    "moduleResolution": "bundler",
+    "resolveJsonModule": true,
+    "isolatedModules": true,
+    "jsx": "react-jsx",
+    "incremental": true,
+    "plugins": [
+      {
+        "name": "next"
+      }
+    ],
+    "paths": {
+      "@/*": ["./src/*"]
+    }
+  },
+  "include": [
+    "next-env.d.ts",
+    "**/*.ts",
+    "**/*.tsx",
+    ".next/types/**/*.ts",
+    ".next/dev/types/**/*.ts",
+    "**/*.mts"
+  ],
+  "exclude": ["node_modules"]
+}
+</file>
+
+</files>

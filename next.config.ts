@@ -1,7 +1,10 @@
 import type { NextConfig } from "next";
 
 const nextConfig: NextConfig = {
-  /* config options here */
+  experimental: {
+    // Allow up to 510 MB request bodies (covers the 500 MB file + form overhead)
+    serverBodySizeLimit: "510mb",
+  },
 };
 
 export default nextConfig;
