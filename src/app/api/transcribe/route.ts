@@ -5,8 +5,8 @@ import type { SubstitutionPolicy, PiiPolicy } from "assemblyai";
 import { del } from "@vercel/blob";
 import { NormalizedResult, TranscriptionResponse } from "@/lib/types";
 
-// Allow up to 10 minutes for large-file transcription jobs
-export const maxDuration = 600;
+// Vercel Hobby caps serverless functions at 300s (5 minutes)
+export const maxDuration = 300;
 
 export async function POST(req: NextRequest) {
   let formData: FormData;
