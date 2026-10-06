@@ -15,7 +15,7 @@ const geistMono = Geist_Mono({
 
 export const metadata: Metadata = {
   title: "Speech-to-Text Feature Sandbox",
-  description: "AssemblyAI Universal-1 transcription feature sandbox",
+  description: "AssemblyAI Universal-3.5 Pro transcription feature sandbox",
 };
 
 export default function RootLayout({ children }: LayoutProps<"/">) {

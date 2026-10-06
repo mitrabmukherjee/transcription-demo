@@ -24,7 +24,7 @@ export default function Home() {
                 Speech-to-Text Feature Sandbox
               </h1>
               <p className="text-xs text-muted-foreground">
-                AssemblyAI Universal-1
+                AssemblyAI Universal-3.5 Pro
               </p>
             </div>
           </div>

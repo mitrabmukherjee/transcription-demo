@@ -112,7 +112,7 @@ export default function MainWorkspace({ blobUploadMode }: MainWorkspaceProps) {
       const data: TranscriptionResponse = await res.json();
       setResult(data);
       toast.success("Transcription complete!", {
-        description: "Processed by AssemblyAI Universal-1",
+        description: "Processed by AssemblyAI Universal-3.5 Pro",
       });
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : "Network error";
