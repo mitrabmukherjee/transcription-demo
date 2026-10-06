@@ -1,7 +1,4 @@
-export type ProviderType = "deepgram" | "assemblyai";
-
 export interface TranscriptionOptions {
-  provider: ProviderType;
   summarize: boolean;
   topics: boolean;
   smartFormat: boolean;
@@ -32,7 +29,6 @@ export interface NormalizedResult {
 }
 
 export interface TranscriptionResponse {
-  provider: ProviderType;
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   raw: any;
   normalized: NormalizedResult;

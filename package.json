@@ -9,7 +9,6 @@
   },
   "dependencies": {
     "@base-ui/react": "^1.8.0",
-    "@deepgram/sdk": "^5.14.0",
     "@vercel/blob": "^2.8.0",
     "assemblyai": "^4.41.5",
     "class-variance-authority": "^0.7.1",

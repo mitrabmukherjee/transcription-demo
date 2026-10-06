@@ -4,7 +4,6 @@ import { useState } from "react";
 import { toast } from "sonner";
 import { Loader2, Wand2 } from "lucide-react";
 import { FileUploader } from "@/components/FileUploader";
-import { ProviderSelector } from "@/components/ProviderSelector";
 import { FeatureOptions } from "@/components/FeatureOptions";
 import { ResultsTabs } from "@/components/ResultsTabs";
 import { Button } from "@/components/ui/button";
@@ -14,7 +13,6 @@ import type { BlobUploadMode } from "@/lib/upload-media";
 import { uploadMediaFile } from "@/lib/upload-media";
 
 const DEFAULT_OPTIONS: TranscriptionOptions = {
-  provider: "deepgram",
   summarize: false,
   topics: false,
   smartFormat: true,
@@ -69,7 +67,6 @@ export default function MainWorkspace({ blobUploadMode }: MainWorkspaceProps) {
 
       const fd = new FormData();
       fd.append("audioUrl", audioUrl);
-      fd.append("provider", options.provider);
       fd.append("summarize", String(options.summarize));
       fd.append("topics", String(options.topics));
       fd.append("smartFormat", String(options.smartFormat));
@@ -115,7 +112,7 @@ export default function MainWorkspace({ blobUploadMode }: MainWorkspaceProps) {
       const data: TranscriptionResponse = await res.json();
       setResult(data);
       toast.success("Transcription complete!", {
-        description: `Processed by ${data.provider === "deepgram" ? "Deepgram Nova-3" : "AssemblyAI Universal-1"}`,
+        description: "Processed by AssemblyAI Universal-1",
       });
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : "Network error";
@@ -141,19 +138,6 @@ export default function MainWorkspace({ blobUploadMode }: MainWorkspaceProps) {
           </CardHeader>
           <CardContent>
             <FileUploader onFileChange={setFile} />
-          </CardContent>
-        </Card>
-
-        {/* Provider selector */}
-        <Card>
-          <CardHeader className="pb-3">
-            <CardTitle className="text-base">Provider</CardTitle>
-          </CardHeader>
-          <CardContent>
-            <ProviderSelector
-              value={options.provider}
-              onChange={(p) => setOptions({ ...options, provider: p })}
-            />
           </CardContent>
         </Card>
 
@@ -189,7 +173,7 @@ export default function MainWorkspace({ blobUploadMode }: MainWorkspaceProps) {
       </div>
 
       {/* ── Right column: Results ── */}
-      <div className="min-h-[400px]">
+      <div className="min-h-[400px] min-w-0">
         {loading && (
           <Card className="h-full flex items-center justify-center min-h-[400px]">
             <CardContent className="flex flex-col items-center gap-4 py-12">

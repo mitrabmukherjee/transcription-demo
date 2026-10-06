@@ -3,13 +3,13 @@
 import { useState } from "react";
 import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
 import { Badge } from "@/components/ui/badge";
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import {
-  Accordion,
-  AccordionContent,
-  AccordionItem,
-  AccordionTrigger,
-} from "@/components/ui/accordion";
+  Card,
+  CardContent,
+  CardDescription,
+  CardHeader,
+  CardTitle,
+} from "@/components/ui/card";
 import { Switch } from "@/components/ui/switch";
 import { Label } from "@/components/ui/label";
 import { TranscriptionResponse } from "@/lib/types";
@@ -52,7 +52,7 @@ export function ResultsTabs({ result }: ResultsTabsProps) {
       : [transcriptText];
 
   return (
-    <Tabs defaultValue="transcript" className="w-full">
+    <Tabs defaultValue="transcript" className="w-full min-w-0 max-w-full">
       <TabsList className="flex w-full mb-4 h-auto">
         <TabsTrigger value="transcript" className="gap-1.5 text-xs sm:text-sm">
           <FileText className="h-3.5 w-3.5" />
@@ -225,27 +225,21 @@ export function ResultsTabs({ result }: ResultsTabsProps) {
 
       {/* ── Raw JSON ── */}
       <TabsContent value="raw">
-        <Card>
-          <CardHeader className="pb-2">
+        <Card className="min-w-0">
+          <CardHeader className="pb-3">
             <CardTitle className="text-base">Raw JSON Payload</CardTitle>
+            <CardDescription>
+              Full AssemblyAI response object
+            </CardDescription>
           </CardHeader>
-          <CardContent className="p-0">
-            <Accordion defaultValue={["json"]}>
-              <AccordionItem value="json" className="border-0">
-                <AccordionTrigger className="px-6 py-3 text-sm hover:no-underline">
-                  View full{" "}
-                  {result.provider === "deepgram" ? "Deepgram" : "AssemblyAI"}{" "}
-                  response object
-                </AccordionTrigger>
-                <AccordionContent className="px-0 pb-0">
-                  <div className="overflow-auto max-h-[500px] rounded-b-lg bg-muted/50 dark:bg-muted/20">
-                    <pre className="text-xs p-6 leading-relaxed font-mono text-foreground">
-                      {JSON.stringify(result.raw, null, 2)}
-                    </pre>
-                  </div>
-                </AccordionContent>
-              </AccordionItem>
-            </Accordion>
+          <CardContent className="min-w-0">
+            <div
+              className="min-w-0 max-w-full overflow-auto rounded-lg border bg-muted/40 max-h-[min(32rem,60vh)]"
+            >
+              <pre className="min-w-0 p-4 text-xs leading-relaxed font-mono text-foreground whitespace-pre-wrap break-words">
+                {JSON.stringify(result.raw, null, 2)}
+              </pre>
+            </div>
           </CardContent>
         </Card>
       </TabsContent>

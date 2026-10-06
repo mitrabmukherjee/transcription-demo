@@ -4,7 +4,6 @@ import { ApiKeyIndicator } from "@/components/ApiKeyIndicator";
 import { Mic } from "lucide-react";
 
 export default function Home() {
-  const deepgramConfigured = !!process.env.DEEPGRAM_API_KEY;
   const assemblyaiConfigured = !!process.env.ASSEMBLYAI_API_KEY;
   const blobClientUpload = !!process.env.BLOB_READ_WRITE_TOKEN;
   const blobServerUpload = !!process.env.BLOB_STORE_ID;
@@ -25,12 +24,11 @@ export default function Home() {
                 Speech-to-Text Feature Sandbox
               </h1>
               <p className="text-xs text-muted-foreground">
-                Deepgram vs. AssemblyAI
+                AssemblyAI Universal-1
               </p>
             </div>
           </div>
           <ApiKeyIndicator
-            deepgramConfigured={deepgramConfigured}
             assemblyaiConfigured={assemblyaiConfigured}
             blobConfigured={blobConfigured}
           />

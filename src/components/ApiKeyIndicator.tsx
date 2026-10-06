@@ -1,18 +1,15 @@
 import { CheckCircle2, XCircle } from "lucide-react";
 
 interface ApiKeyIndicatorProps {
-  deepgramConfigured: boolean;
   assemblyaiConfigured: boolean;
   blobConfigured: boolean;
 }
 
 export function ApiKeyIndicator({
-  deepgramConfigured,
   assemblyaiConfigured,
   blobConfigured,
 }: ApiKeyIndicatorProps) {
   const keys = [
-    { label: "Deepgram", ok: deepgramConfigured },
     { label: "AssemblyAI", ok: assemblyaiConfigured },
     { label: "Vercel Blob", ok: blobConfigured },
   ];
