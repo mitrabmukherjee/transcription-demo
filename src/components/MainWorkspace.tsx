@@ -24,6 +24,11 @@ const DEFAULT_OPTIONS: TranscriptionOptions = {
   redact: false,
   diarize: false,
   fillerWords: false,
+  verbatimMode: true,
+  speakerIdentification: true,
+  steoraPunctuation: true,
+  steoraLlmPass: false,
+  knownSpeakerNames: "",
 };
 
 const STATUS_MESSAGES = [
@@ -78,6 +83,11 @@ export default function MainWorkspace({ blobUploadMode }: MainWorkspaceProps) {
       fd.append("redact", String(options.redact));
       fd.append("diarize", String(options.diarize));
       fd.append("fillerWords", String(options.fillerWords));
+      fd.append("verbatimMode", String(options.verbatimMode));
+      fd.append("speakerIdentification", String(options.speakerIdentification));
+      fd.append("steoraPunctuation", String(options.steoraPunctuation));
+      fd.append("steoraLlmPass", String(options.steoraLlmPass));
+      fd.append("knownSpeakerNames", options.knownSpeakerNames);
 
       const res = await fetch("/api/transcribe", {
         method: "POST",

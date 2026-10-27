@@ -2,8 +2,18 @@ import { NextRequest, NextResponse } from "next/server";
 import { AssemblyAI } from "assemblyai";
 import type { SubstitutionPolicy, PiiPolicy } from "assemblyai";
 import { del } from "@vercel/blob";
-import { NormalizedResult, TranscriptionResponse } from "@/lib/types";
+import { NormalizedResult, TranscriptionResponse, SpeakerSegment } from "@/lib/types";
 import { splitTranscriptIntoParagraphs } from "@/lib/steoraDocumentFormat";
+import { identifySpeakersOnTranscript } from "@/lib/assemblyaiSpeakerId";
+import {
+  applySteoraDialogueRules,
+  applySteoraLlmPunctuation,
+  collectCandidateSpeakerNames,
+  formatDiarizationSpeakerLabel,
+  mergeUtteranceTextWithWordTags,
+  tagLowConfidenceWords,
+  type TranscriptWordLike,
+} from "@/lib/steoraPostProcess";
 
 // Vercel Hobby caps serverless functions at 300s (5 minutes)
 export const maxDuration = 300;
@@ -35,6 +45,12 @@ export async function POST(req: NextRequest) {
   const redact = formData.get("redact") === "true";
   const diarize = formData.get("diarize") === "true";
   const fillerWords = formData.get("fillerWords") === "true";
+  const verbatimMode = formData.get("verbatimMode") === "true";
+  const speakerIdentification = formData.get("speakerIdentification") === "true";
+  const steoraPunctuation = formData.get("steoraPunctuation") === "true";
+  const steoraLlmPass = formData.get("steoraLlmPass") === "true";
+  const knownSpeakerNames =
+    (formData.get("knownSpeakerNames") as string | null)?.trim() ?? "";
 
   const opts = {
     summarize,
@@ -48,6 +64,11 @@ export async function POST(req: NextRequest) {
     redact,
     diarize,
     fillerWords,
+    verbatimMode,
+    speakerIdentification,
+    steoraPunctuation,
+    steoraLlmPass,
+    knownSpeakerNames,
   };
 
   try {
@@ -83,6 +104,19 @@ interface ToggleOptions {
   redact: boolean;
   diarize: boolean;
   fillerWords: boolean;
+  verbatimMode: boolean;
+  speakerIdentification: boolean;
+  steoraPunctuation: boolean;
+  steoraLlmPass: boolean;
+  knownSpeakerNames: string;
+}
+
+function parseKnownSpeakerNames(raw: string): string[] {
+  if (!raw) return [];
+  return raw
+    .split(/[,;\n]/)
+    .map((s) => s.trim())
+    .filter(Boolean);
 }
 
 async function transcribeWithAssemblyAI(
@@ -96,6 +130,10 @@ async function transcribeWithAssemblyAI(
       { status: 400 }
     );
   }
+
+  const effectiveSmartFormat = opts.verbatimMode ? false : opts.smartFormat;
+  const effectiveFillerWords = opts.verbatimMode ? true : opts.fillerWords;
+  const useSpeakerId = opts.speakerIdentification && opts.diarize;
 
   const client = new AssemblyAI({ apiKey });
 
@@ -115,7 +153,7 @@ async function transcribeWithAssemblyAI(
       summary_type: "bullets",
     }),
     ...(opts.topics && { iab_categories: true }),
-    ...(opts.smartFormat && { format_text: true }),
+    ...(effectiveSmartFormat && { format_text: true }),
     ...(opts.punctuation && { punctuate: true }),
     ...(opts.utterances && { speech_threshold: opts.silenceThreshold }),
     ...(opts.profanityFilter && { filter_profanity: true }),
@@ -125,7 +163,8 @@ async function transcribeWithAssemblyAI(
       redact_pii_policies: piiPolicies,
     }),
     ...(opts.diarize && { speaker_labels: true }),
-    ...(opts.fillerWords && { disfluencies: true }),
+    ...(effectiveFillerWords && { disfluencies: true }),
+    ...(useSpeakerId && { entity_detection: true }),
   });
 
   if (transcript.status === "error") {
@@ -141,12 +180,88 @@ async function transcribeWithAssemblyAI(
     topicsList.push(...Object.keys(iabSummary).slice(0, 15));
   }
 
-  const utterancesList = (transcript.utterances || []).map((u) => ({
-    speaker: `Speaker ${u.speaker}`,
-    start: (u.start || 0) / 1000,
-    end: (u.end || 0) / 1000,
-    text: u.text,
-  }));
+  let utterancesList: SpeakerSegment[] = (transcript.utterances || []).map(
+    (u) => ({
+      speaker: formatDiarizationSpeakerLabel(u.speaker),
+      start: (u.start || 0) / 1000,
+      end: (u.end || 0) / 1000,
+      text: u.text,
+    })
+  );
+
+  if (useSpeakerId && transcript.id) {
+    try {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const entities = ((transcript as any).entities ?? []) as {
+        entity_type: string;
+        text: string;
+      }[];
+      const entityNames = entities
+        .filter((e) => e.entity_type === "person_name")
+        .map((e) => e.text);
+
+      const candidates = collectCandidateSpeakerNames(
+        transcript.text || "",
+        entityNames,
+        parseKnownSpeakerNames(opts.knownSpeakerNames)
+      );
+
+      const identified = await identifySpeakersOnTranscript(
+        apiKey,
+        transcript.id,
+        candidates
+      );
+
+      if (identified.utterances.length > 0) {
+        utterancesList = identified.utterances.map((u) => ({
+          ...u,
+          speaker: formatDiarizationSpeakerLabel(u.speaker),
+        }));
+      }
+    } catch (idErr: unknown) {
+      console.warn("[transcribe] speaker identification failed:", idErr);
+    }
+  }
+
+  const words = (transcript.words ?? []) as TranscriptWordLike[];
+
+  if (
+    (opts.steoraPunctuation || opts.verbatimMode) &&
+    utterancesList.length > 0 &&
+    words.length > 0
+  ) {
+    utterancesList = utterancesList.map((u) => {
+      const startMs = u.start * 1000;
+      const endMs = u.end * 1000;
+      const tagged = tagLowConfidenceWords(startMs, endMs, words);
+      return {
+        ...u,
+        text: mergeUtteranceTextWithWordTags(u.text, tagged),
+      };
+    });
+  }
+
+  if (
+    (opts.steoraPunctuation || opts.verbatimMode) &&
+    utterancesList.length > 0
+  ) {
+    utterancesList = applySteoraDialogueRules(utterancesList);
+  }
+
+  const openAiKey = process.env.OPENAI_API_KEY;
+  const runLlm =
+    opts.steoraLlmPass &&
+    (opts.steoraPunctuation || opts.verbatimMode) &&
+    utterancesList.length > 0 &&
+    openAiKey;
+
+  if (runLlm) {
+    try {
+      utterancesList = await applySteoraLlmPunctuation(utterancesList, openAiKey);
+    } catch (llmErr: unknown) {
+      console.warn("[transcribe] Steora LLM punctuation failed:", llmErr);
+    }
+  }
 
   let paragraphsList: string[] = [];
   if (opts.paragraphs && transcript.id) {
@@ -176,13 +291,26 @@ async function transcribeWithAssemblyAI(
     }
   }
 
+  let transcriptText = transcript.text || "";
+  if (utterancesList.length > 0 && useSpeakerId) {
+    transcriptText = utterancesList
+      .map((u) => `${u.speaker}: ${u.text}`)
+      .join("\n");
+  }
+
   const normalized: NormalizedResult = {
-    transcript: transcript.text || "",
+    transcript: transcriptText,
     paragraphs: paragraphsList,
     summary: transcript.summary || null,
     topics: topicsList,
     piiEntities,
     utterances: utterancesList,
+    meta: {
+      verbatimMode: opts.verbatimMode,
+      speakerIdentification: useSpeakerId,
+      steoraPunctuation: opts.steoraPunctuation || opts.verbatimMode,
+      steoraLlmPass: Boolean(runLlm),
+    },
   };
 
   const response: TranscriptionResponse = {

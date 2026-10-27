@@ -55,9 +55,15 @@ export function ResultsTabs({ result }: ResultsTabsProps) {
   const [showFillers, setShowFillers] = useState(true);
   const [diarizationTimelineView, setDiarizationTimelineView] = useState(false);
 
-  const transcriptText = showFillers
-    ? normalized.transcript
-    : normalized.transcript.replace(/\b(uh|um|uh-huh|mm-hmm|hmm)\b/gi, "").replace(/\s+/g, " ").trim();
+  const verbatim = normalized.meta?.verbatimMode ?? false;
+
+  const transcriptText =
+    showFillers || verbatim
+      ? normalized.transcript
+      : normalized.transcript
+          .replace(/\b(uh|um|uh-huh|mm-hmm|hmm)\b/gi, "")
+          .replace(/\s+/g, " ")
+          .trim();
 
   const displayParagraphs =
     normalized.paragraphs.length > 0
@@ -149,6 +155,9 @@ export function ResultsTabs({ result }: ResultsTabsProps) {
                 <Label htmlFor="filler-toggle" className="text-xs cursor-pointer">
                   Show filler words
                 </Label>
+                {verbatim && (
+                  <span className="text-xs text-muted-foreground">(verbatim)</span>
+                )}
               </div>
               <div className="flex gap-2">
                 <Button variant="outline" size="sm" onClick={() => handleCopy("transcript")}>

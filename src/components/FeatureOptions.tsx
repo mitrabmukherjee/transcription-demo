@@ -18,6 +18,30 @@ interface FeatureDef {
 
 const features: FeatureDef[] = [
   {
+    key: "verbatimMode",
+    label: "Steora Verbatim Deliverable",
+    description:
+      "Disfluencies on, smart format off, diarization + speaker ID + Steora punctuation rules (Genmab-style).",
+  },
+  {
+    key: "speakerIdentification",
+    label: "Speaker Identification",
+    description:
+      "Map diarization labels to names from the transcript (plus “Unidentified Speaker”). Requires Diarization.",
+  },
+  {
+    key: "steoraPunctuation",
+    label: "Steora Punctuation Rules",
+    description:
+      "Low-confidence [indiscernible], … and — for pauses and interruptions between turns.",
+  },
+  {
+    key: "steoraLlmPass",
+    label: "Steora LLM Polish (optional)",
+    description:
+      "Refine punctuation with OpenAI when OPENAI_API_KEY is set on the server. Adds latency and cost.",
+  },
+  {
     key: "summarize",
     label: "Summarization",
     description: "Generate executive summary of the content.",
@@ -60,18 +84,45 @@ const features: FeatureDef[] = [
   {
     key: "diarize",
     label: "Diarization",
-    description: "Identify speaker changes (Speaker 0, Speaker 1, etc.).",
+    description: "Identify speaker changes (required for speaker identification).",
   },
   {
     key: "fillerWords",
     label: "Filler Words",
-    description: 'Keep disfluencies like "uh" and "um" (Verbatim mode).',
+    description: 'Keep disfluencies like "uh" and "um" (auto-enabled in verbatim mode).',
   },
 ];
 
+function applyVerbatimPreset(options: TranscriptionOptions): TranscriptionOptions {
+  return {
+    ...options,
+    smartFormat: false,
+    fillerWords: true,
+    diarize: true,
+    utterances: true,
+    punctuation: true,
+    speakerIdentification: true,
+    steoraPunctuation: true,
+  };
+}
+
 export function FeatureOptions({ options, onChange }: FeatureOptionsProps) {
-  const set = (key: keyof TranscriptionOptions, value: boolean | number) => {
-    onChange({ ...options, [key]: value });
+  const set = (key: keyof TranscriptionOptions, value: boolean | number | string) => {
+    let next = { ...options, [key]: value } as TranscriptionOptions;
+
+    if (key === "verbatimMode" && value === true) {
+      next = applyVerbatimPreset(next);
+    }
+
+    if (key === "speakerIdentification" && value === true && !next.diarize) {
+      next = { ...next, diarize: true };
+    }
+
+    if (key === "diarize" && value === false) {
+      next = { ...next, speakerIdentification: false };
+    }
+
+    onChange(next);
   };
 
   return (
@@ -87,6 +138,11 @@ export function FeatureOptions({ options, onChange }: FeatureOptionsProps) {
               checked={options[f.key] as boolean}
               onCheckedChange={(v) => set(f.key, v)}
               className="mt-0.5 shrink-0"
+              disabled={
+                (f.key === "smartFormat" && options.verbatimMode) ||
+                (f.key === "fillerWords" && options.verbatimMode) ||
+                (f.key === "speakerIdentification" && !options.diarize)
+              }
             />
             <div className="flex-1 min-w-0">
               <Label htmlFor={f.key} className="text-sm font-medium cursor-pointer">
@@ -95,7 +151,6 @@ export function FeatureOptions({ options, onChange }: FeatureOptionsProps) {
               <p className="text-xs text-muted-foreground mt-0.5 leading-snug">
                 {f.description}
               </p>
-              {/* Silence threshold sub-input for utterance segmentation */}
               {f.key === "utterances" && options.utterances && (
                 <div className="flex items-center gap-2 mt-2">
                   <Label
@@ -115,6 +170,24 @@ export function FeatureOptions({ options, onChange }: FeatureOptionsProps) {
                       set("silenceThreshold", parseFloat(e.target.value) || 0.8)
                     }
                     className="h-7 w-20 text-xs"
+                  />
+                </div>
+              )}
+              {f.key === "speakerIdentification" && options.speakerIdentification && (
+                <div className="mt-2 space-y-1">
+                  <Label
+                    htmlFor="knownSpeakerNames"
+                    className="text-xs text-muted-foreground"
+                  >
+                    Known speaker names (optional, comma-separated)
+                  </Label>
+                  <Input
+                    id="knownSpeakerNames"
+                    type="text"
+                    placeholder="Judith Klimovsky, Host Name"
+                    value={options.knownSpeakerNames}
+                    onChange={(e) => set("knownSpeakerNames", e.target.value)}
+                    className="h-8 text-xs"
                   />
                 </div>
               )}
