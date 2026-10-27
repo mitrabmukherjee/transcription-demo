@@ -3,6 +3,7 @@ import { AssemblyAI } from "assemblyai";
 import type { SubstitutionPolicy, PiiPolicy } from "assemblyai";
 import { del } from "@vercel/blob";
 import { NormalizedResult, TranscriptionResponse } from "@/lib/types";
+import { splitTranscriptIntoParagraphs } from "@/lib/steoraDocumentFormat";
 
 // Vercel Hobby caps serverless functions at 300s (5 minutes)
 export const maxDuration = 300;
@@ -147,6 +148,21 @@ async function transcribeWithAssemblyAI(
     text: u.text,
   }));
 
+  let paragraphsList: string[] = [];
+  if (opts.paragraphs && transcript.id) {
+    try {
+      const paraResponse = await client.transcripts.paragraphs(transcript.id);
+      paragraphsList = (paraResponse.paragraphs ?? [])
+        .map((p) => p.text?.trim() ?? "")
+        .filter(Boolean);
+    } catch (paraErr: unknown) {
+      console.warn("[transcribe] paragraphs fetch failed:", paraErr);
+    }
+  }
+  if (opts.paragraphs && paragraphsList.length === 0 && transcript.text) {
+    paragraphsList = splitTranscriptIntoParagraphs(transcript.text);
+  }
+
   const piiEntities: string[] = [];
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const entities = (transcript as any)?.entities as
@@ -162,7 +178,7 @@ async function transcribeWithAssemblyAI(
 
   const normalized: NormalizedResult = {
     transcript: transcript.text || "",
-    paragraphs: [],
+    paragraphs: paragraphsList,
     summary: transcript.summary || null,
     topics: topicsList,
     piiEntities,

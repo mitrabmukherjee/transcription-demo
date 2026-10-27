@@ -1,8 +1,9 @@
 "use client";
 
-import { useState } from "react";
+import { Fragment, useState } from "react";
 import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
 import { Badge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
 import {
   Card,
   CardContent,
@@ -13,7 +14,18 @@ import {
 import { Switch } from "@/components/ui/switch";
 import { Label } from "@/components/ui/label";
 import { TranscriptionResponse } from "@/lib/types";
-import { AlertTriangle, FileText, Mic2, Brain, Code2 } from "lucide-react";
+import { AlertTriangle, FileText, Mic2, Brain, Code2, Copy, Download } from "lucide-react";
+import { toast } from "sonner";
+import { saveAs } from "file-saver";
+import {
+  buildDiarizationDocxParagraphs,
+  buildDiarizationHtml,
+  buildDiarizationPlainText,
+  buildTranscriptDocxParagraphs,
+  buildTranscriptHtml,
+  buildTranscriptPlainText,
+  packSteoraDocx,
+} from "@/lib/steoraDocumentFormat";
 
 function formatTime(secs: number) {
   const m = Math.floor(secs / 60);
@@ -41,6 +53,7 @@ interface ResultsTabsProps {
 export function ResultsTabs({ result }: ResultsTabsProps) {
   const { normalized } = result;
   const [showFillers, setShowFillers] = useState(true);
+  const [diarizationTimelineView, setDiarizationTimelineView] = useState(false);
 
   const transcriptText = showFillers
     ? normalized.transcript
@@ -50,6 +63,52 @@ export function ResultsTabs({ result }: ResultsTabsProps) {
     normalized.paragraphs.length > 0
       ? normalized.paragraphs
       : [transcriptText];
+
+  const handleCopy = async (type: "transcript" | "diarization") => {
+    try {
+      let plainText = "";
+      let htmlText = "";
+
+      if (type === "diarization" && normalized.utterances.length > 0) {
+        plainText = buildDiarizationPlainText(normalized.utterances);
+        htmlText = buildDiarizationHtml(normalized.utterances);
+      } else {
+        plainText = buildTranscriptPlainText(displayParagraphs);
+        htmlText = buildTranscriptHtml(displayParagraphs);
+      }
+
+      const clipboardItem = new ClipboardItem({
+        "text/plain": new Blob([plainText], { type: "text/plain" }),
+        "text/html": new Blob([htmlText], { type: "text/html" }),
+      });
+
+      await navigator.clipboard.write([clipboardItem]);
+      toast.success("Copied to clipboard with formatting");
+    } catch (err) {
+      console.error(err);
+      toast.error("Failed to copy to clipboard");
+    }
+  };
+
+  const handleDownload = async (type: "transcript" | "diarization") => {
+    try {
+      const paragraphs =
+        type === "diarization" && normalized.utterances.length > 0
+          ? buildDiarizationDocxParagraphs(normalized.utterances)
+          : buildTranscriptDocxParagraphs(displayParagraphs);
+
+      const blob = await packSteoraDocx(paragraphs);
+      saveAs(blob, `${type === "diarization" ? "Diarization" : "Transcript"}_Steora.docx`);
+      toast.success("Document downloaded");
+    } catch (err) {
+      console.error(err);
+      toast.error("Failed to generate document");
+    }
+  };
+
+  const transcriptParagraphsForPreview = displayParagraphs
+    .map((p) => p.trim())
+    .filter(Boolean);
 
   return (
     <Tabs defaultValue="transcript" className="w-full min-w-0 max-w-full">
@@ -80,24 +139,39 @@ export function ResultsTabs({ result }: ResultsTabsProps) {
         <Card>
           <CardHeader className="pb-3 flex flex-row items-center justify-between">
             <CardTitle className="text-base">Transcript</CardTitle>
-            <div className="flex items-center gap-2">
-              <Switch
-                id="filler-toggle"
-                checked={showFillers}
-                onCheckedChange={setShowFillers}
-              />
-              <Label htmlFor="filler-toggle" className="text-xs cursor-pointer">
-                Show filler words
-              </Label>
+            <div className="flex items-center gap-4">
+              <div className="flex items-center gap-2">
+                <Switch
+                  id="filler-toggle"
+                  checked={showFillers}
+                  onCheckedChange={setShowFillers}
+                />
+                <Label htmlFor="filler-toggle" className="text-xs cursor-pointer">
+                  Show filler words
+                </Label>
+              </div>
+              <div className="flex gap-2">
+                <Button variant="outline" size="sm" onClick={() => handleCopy("transcript")}>
+                  <Copy className="h-3.5 w-3.5 mr-1" /> Copy
+                </Button>
+                <Button variant="outline" size="sm" onClick={() => handleDownload("transcript")}>
+                  <Download className="h-3.5 w-3.5 mr-1" /> DOCX
+                </Button>
+              </div>
             </div>
           </CardHeader>
           <CardContent>
             {normalized.transcript ? (
-              <div className="space-y-4">
-                {displayParagraphs.map((para, i) => (
-                  <p key={i} className="text-sm leading-relaxed text-foreground">
-                    {para}
-                  </p>
+              <div className="steora-draft">
+                {transcriptParagraphsForPreview.map((para, i) => (
+                  <Fragment key={i}>
+                    <p>{para}</p>
+                    {i < transcriptParagraphsForPreview.length - 1 && (
+                      <p className="steora-draft-spacer" aria-hidden="true">
+                        &nbsp;
+                      </p>
+                    )}
+                  </Fragment>
                 ))}
               </div>
             ) : (
@@ -112,33 +186,61 @@ export function ResultsTabs({ result }: ResultsTabsProps) {
       {/* ── Diarization & Utterances ── */}
       <TabsContent value="diarization">
         <Card>
-          <CardHeader className="pb-3">
+          <CardHeader className="pb-3 flex flex-row items-center justify-between gap-2 flex-wrap">
             <CardTitle className="text-base">Diarization & Utterances</CardTitle>
+            <div className="flex items-center gap-4 flex-wrap">
+              <div className="flex items-center gap-2">
+                <Switch
+                  id="timeline-toggle"
+                  checked={diarizationTimelineView}
+                  onCheckedChange={setDiarizationTimelineView}
+                />
+                <Label htmlFor="timeline-toggle" className="text-xs cursor-pointer">
+                  Timeline view
+                </Label>
+              </div>
+              <div className="flex gap-2">
+                <Button variant="outline" size="sm" onClick={() => handleCopy("diarization")}>
+                  <Copy className="h-3.5 w-3.5 mr-1" /> Copy
+                </Button>
+                <Button variant="outline" size="sm" onClick={() => handleDownload("diarization")}>
+                  <Download className="h-3.5 w-3.5 mr-1" /> DOCX
+                </Button>
+              </div>
+            </div>
           </CardHeader>
           <CardContent>
             {normalized.utterances.length > 0 ? (
-              <div className="space-y-2">
-                {normalized.utterances.map((u, i) => (
-                  <div
-                    key={i}
-                    className="flex gap-3 rounded-lg p-3 border hover:bg-muted/30 transition-colors"
-                  >
-                    <span
-                      className={`text-xs font-semibold px-2 py-0.5 rounded-full h-fit whitespace-nowrap mt-0.5 ${getSpeakerColor(
-                        u.speaker
-                      )}`}
+              diarizationTimelineView ? (
+                <div className="space-y-2">
+                  {normalized.utterances.map((u, i) => (
+                    <div
+                      key={i}
+                      className="flex gap-3 rounded-lg p-3 border hover:bg-muted/30 transition-colors"
                     >
-                      {u.speaker}
-                    </span>
-                    <div className="flex-1 min-w-0">
-                      <p className="text-sm leading-relaxed">{u.text}</p>
-                      <p className="text-xs text-muted-foreground mt-1">
-                        {formatTime(u.start)} → {formatTime(u.end)}
-                      </p>
+                      <span
+                        className={`text-xs font-semibold px-2 py-0.5 rounded-full h-fit whitespace-nowrap mt-0.5 ${getSpeakerColor(
+                          u.speaker
+                        )}`}
+                      >
+                        {u.speaker}
+                      </span>
+                      <div className="flex-1 min-w-0">
+                        <p className="text-sm leading-relaxed">{u.text}</p>
+                        <p className="text-xs text-muted-foreground mt-1">
+                          {formatTime(u.start)} → {formatTime(u.end)}
+                        </p>
+                      </div>
                     </div>
-                  </div>
-                ))}
-              </div>
+                  ))}
+                </div>
+              ) : (
+                <div className="steora-draft">
+                  {normalized.utterances.map((u, i) => (
+                    <p key={i}>{`${u.speaker}: ${u.text}`}</p>
+                  ))}
+                </div>
+              )
             ) : (
               <p className="text-sm text-muted-foreground italic">
                 No utterance / diarization data. Enable Diarization or Utterance
@@ -152,7 +254,6 @@ export function ResultsTabs({ result }: ResultsTabsProps) {
       {/* ── Audio Intelligence ── */}
       <TabsContent value="intelligence">
         <div className="space-y-4">
-          {/* Summary */}
           <Card>
             <CardHeader className="pb-2">
               <CardTitle className="text-base">Summary</CardTitle>
@@ -170,7 +271,6 @@ export function ResultsTabs({ result }: ResultsTabsProps) {
             </CardContent>
           </Card>
 
-          {/* Topics */}
           <Card>
             <CardHeader className="pb-2">
               <CardTitle className="text-base">Detected Topics</CardTitle>
@@ -192,7 +292,6 @@ export function ResultsTabs({ result }: ResultsTabsProps) {
             </CardContent>
           </Card>
 
-          {/* PII / Redaction */}
           <Card>
             <CardHeader className="pb-2">
               <CardTitle className="text-base flex items-center gap-2">

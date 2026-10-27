@@ -128,3 +128,20 @@
     @apply font-sans;
   }
 }
+
+/* Steora client draft preview (matches reference DOCX body typography). */
+.steora-draft {
+  font-family: Calibri, "Segoe UI", sans-serif;
+  font-size: 12pt;
+  line-height: 1.158;
+  color: var(--foreground);
+}
+
+.steora-draft p {
+  margin: 0 0 8pt;
+  font-weight: normal;
+}
+
+.steora-draft-spacer {
+  min-height: 0;
+}
