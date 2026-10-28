@@ -3,7 +3,11 @@ import { AssemblyAI } from "assemblyai";
 import type { SubstitutionPolicy, PiiPolicy } from "assemblyai";
 import { del } from "@vercel/blob";
 import { NormalizedResult, TranscriptionResponse, SpeakerSegment } from "@/lib/types";
-import { splitTranscriptIntoParagraphs } from "@/lib/steoraDocumentFormat";
+import {
+  buildDiarizationPlainText,
+  splitTranscriptIntoParagraphs,
+  steoraParagraphsFromUtterances,
+} from "@/lib/steoraDocumentFormat";
 import { identifySpeakersOnTranscript } from "@/lib/assemblyaiSpeakerId";
 import {
   applySteoraDialogueRules,
@@ -263,8 +267,14 @@ async function transcribeWithAssemblyAI(
     }
   }
 
+  const steoraDeliverable =
+    (opts.steoraPunctuation || opts.verbatimMode) &&
+    utterancesList.length > 0;
+
   let paragraphsList: string[] = [];
-  if (opts.paragraphs && transcript.id) {
+  if (steoraDeliverable) {
+    paragraphsList = steoraParagraphsFromUtterances(utterancesList);
+  } else if (opts.paragraphs && transcript.id) {
     try {
       const paraResponse = await client.transcripts.paragraphs(transcript.id);
       paragraphsList = (paraResponse.paragraphs ?? [])
@@ -274,7 +284,12 @@ async function transcribeWithAssemblyAI(
       console.warn("[transcribe] paragraphs fetch failed:", paraErr);
     }
   }
-  if (opts.paragraphs && paragraphsList.length === 0 && transcript.text) {
+  if (
+    !steoraDeliverable &&
+    opts.paragraphs &&
+    paragraphsList.length === 0 &&
+    transcript.text
+  ) {
     paragraphsList = splitTranscriptIntoParagraphs(transcript.text);
   }
 
@@ -292,10 +307,11 @@ async function transcribeWithAssemblyAI(
   }
 
   let transcriptText = transcript.text || "";
-  if (utterancesList.length > 0 && useSpeakerId) {
-    transcriptText = utterancesList
-      .map((u) => `${u.speaker}: ${u.text}`)
-      .join("\n");
+  if (
+    utterancesList.length > 0 &&
+    (useSpeakerId || steoraDeliverable)
+  ) {
+    transcriptText = buildDiarizationPlainText(utterancesList);
   }
 
   const normalized: NormalizedResult = {

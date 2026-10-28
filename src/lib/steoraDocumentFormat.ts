@@ -127,10 +127,15 @@ export function buildTranscriptDocxParagraphs(paragraphs: string[]): Paragraph[]
   return docxParagraphs;
 }
 
+/** One Genmab-style line per utterance (`Speaker: text`). */
+export function steoraParagraphsFromUtterances(
+  utterances: SpeakerSegment[]
+): string[] {
+  return utterances.map((u) => `${u.speaker}: ${u.text}`);
+}
+
 export function buildDiarizationPlainText(utterances: SpeakerSegment[]): string {
-  return utterances
-    .map((u) => `${u.speaker}: ${u.text}`)
-    .join("\n");
+  return steoraParagraphsFromUtterances(utterances).join("\n");
 }
 
 export function buildDiarizationHtml(utterances: SpeakerSegment[]): string {
