@@ -4,6 +4,7 @@ import {
   BLOB_ALLOWED_CONTENT_TYPES,
   MAX_UPLOAD_BYTES,
 } from "@/lib/blob-upload";
+import { publicApiErrorMessage } from "@/lib/client-errors";
 
 export async function POST(request: Request): Promise<NextResponse> {
   if (!process.env.BLOB_READ_WRITE_TOKEN) {
@@ -36,9 +37,9 @@ export async function POST(request: Request): Promise<NextResponse> {
 
     return NextResponse.json(jsonResponse);
   } catch (error: unknown) {
-    const message =
-      error instanceof Error ? error.message : "Upload token generation failed";
-    console.error("[upload]", error);
-    return NextResponse.json({ error: message }, { status: 400 });
+    return NextResponse.json(
+      { error: publicApiErrorMessage(error, "Upload token generation failed") },
+      { status: 400 }
+    );
   }
 }

@@ -22,7 +22,8 @@ export function tagLowConfidenceWords(
   words: TranscriptWordLike[]
 ): string {
   const slice = words.filter(
-    (w) => w.start >= utteranceStartMs - 50 && w.end <= utteranceEndMs + 50
+    (w) =>
+      w.end > utteranceStartMs - 50 && w.start < utteranceEndMs + 50
   );
   if (slice.length === 0) return "";
 
@@ -100,7 +101,9 @@ Rules:
 - Use [ph] sparingly for deliberate phonetic spellings of names/terms when the plain spelling would be wrong.
 - Do not add content. Do not remove disfluencies (uh, um). Return ONLY a JSON array of strings, one string per input utterance, same order and count.`;
 
-export async function applySteoraLlmPunctuation(
+const STEORA_LLM_CHUNK_SIZE = 40;
+
+async function applySteoraLlmPunctuationChunk(
   utterances: SpeakerSegment[],
   apiKey: string
 ): Promise<SpeakerSegment[]> {
@@ -128,7 +131,7 @@ export async function applySteoraLlmPunctuation(
 
   if (!response.ok) {
     const errText = await response.text();
-    throw new Error(`Steora LLM pass failed: ${response.status} ${errText}`);
+    throw new Error(`Steora LLM pass failed: ${response.status} ${errText.slice(0, 200)}`);
   }
 
   const data = (await response.json()) as {
@@ -138,7 +141,14 @@ export async function applySteoraLlmPunctuation(
   if (raw.startsWith("```")) {
     raw = raw.replace(/^```(?:json)?\s*/i, "").replace(/\s*```$/, "");
   }
-  const parsed = JSON.parse(raw) as string[];
+
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    throw new Error("Steora LLM pass returned non-JSON content");
+  }
+
   if (!Array.isArray(parsed) || parsed.length !== utterances.length) {
     throw new Error("Steora LLM pass returned invalid utterance array");
   }
@@ -147,6 +157,21 @@ export async function applySteoraLlmPunctuation(
     ...u,
     text: typeof parsed[i] === "string" ? parsed[i] : u.text,
   }));
+}
+
+export async function applySteoraLlmPunctuation(
+  utterances: SpeakerSegment[],
+  apiKey: string
+): Promise<SpeakerSegment[]> {
+  if (utterances.length === 0) return utterances;
+
+  const result: SpeakerSegment[] = [];
+  for (let i = 0; i < utterances.length; i += STEORA_LLM_CHUNK_SIZE) {
+    const chunk = utterances.slice(i, i + STEORA_LLM_CHUNK_SIZE);
+    const polished = await applySteoraLlmPunctuationChunk(chunk, apiKey);
+    result.push(...polished);
+  }
+  return result;
 }
 
 /** Extract likely person names from transcript text + entities. */

@@ -6,10 +6,15 @@ import {
 
 export type BlobUploadMode = "client" | "server";
 
+export interface MediaUploadResult {
+  url: string;
+  truncated?: boolean;
+}
+
 export async function uploadMediaFile(
   file: File,
   mode: BlobUploadMode
-): Promise<string> {
+): Promise<MediaUploadResult> {
   if (mode === "client") {
     const blob = await upload(blobUploadPathname(file.name), file, {
       access: "public",
@@ -17,7 +22,7 @@ export async function uploadMediaFile(
       multipart: file.size > BLOB_MULTIPART_THRESHOLD_BYTES,
       contentType: file.type || undefined,
     });
-    return blob.url;
+    return { url: blob.url };
   }
 
   const fd = new FormData();
@@ -35,10 +40,10 @@ export async function uploadMediaFile(
     );
   }
 
-  const data = (await res.json()) as { url: string };
+  const data = (await res.json()) as { url: string; truncated?: boolean };
   if (!data.url) {
     throw new Error("Upload succeeded but no blob URL was returned");
   }
 
-  return data.url;
+  return { url: data.url, truncated: data.truncated };
 }

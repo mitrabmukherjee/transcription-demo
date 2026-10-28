@@ -33,13 +33,13 @@ const features: FeatureDef[] = [
     key: "steoraPunctuation",
     label: "Steora Punctuation Rules",
     description:
-      "Low-confidence [indiscernible], … and — for pauses and interruptions between turns.",
+      "Low-confidence [indiscernible], … and — for pauses and interruptions between turns. Requires Diarization.",
   },
   {
     key: "steoraLlmPass",
     label: "Steora LLM Polish (optional)",
     description:
-      "Refine punctuation with OpenAI when OPENAI_API_KEY is set on the server. Adds latency and cost.",
+      "Sends utterance text to OpenAI (when OPENAI_API_KEY is set) for punctuation polish. Adds latency, cost, and third-party processing.",
   },
   {
     key: "summarize",
@@ -69,7 +69,8 @@ const features: FeatureDef[] = [
   {
     key: "utterances",
     label: "Utterance Segmentation",
-    description: "Group speech into semantic units.",
+    description:
+      "Turn-by-turn segments in the Diarization tab (via AssemblyAI speaker labels). Requires Diarization.",
   },
   {
     key: "profanityFilter",
@@ -84,7 +85,8 @@ const features: FeatureDef[] = [
   {
     key: "diarize",
     label: "Diarization",
-    description: "Identify speaker changes (required for speaker identification).",
+    description:
+      "Identify speaker changes and turn-by-turn utterances (required for Steora formatting and speaker identification).",
   },
   {
     key: "fillerWords",
@@ -118,8 +120,30 @@ export function FeatureOptions({ options, onChange }: FeatureOptionsProps) {
       next = { ...next, diarize: true };
     }
 
+    if (key === "utterances" && value === true && !next.diarize) {
+      next = { ...next, diarize: true };
+    }
+
+    if (
+      (key === "steoraPunctuation" || key === "steoraLlmPass") &&
+      value === true &&
+      !next.diarize
+    ) {
+      next = { ...next, diarize: true, utterances: true };
+    }
+
+    if (key === "diarize" && value === true) {
+      next = { ...next, utterances: true };
+    }
+
     if (key === "diarize" && value === false) {
-      next = { ...next, speakerIdentification: false };
+      next = {
+        ...next,
+        speakerIdentification: false,
+        utterances: false,
+        steoraPunctuation: false,
+        steoraLlmPass: false,
+      };
     }
 
     onChange(next);
@@ -141,7 +165,9 @@ export function FeatureOptions({ options, onChange }: FeatureOptionsProps) {
               disabled={
                 (f.key === "smartFormat" && options.verbatimMode) ||
                 (f.key === "fillerWords" && options.verbatimMode) ||
-                (f.key === "speakerIdentification" && !options.diarize)
+                (f.key === "speakerIdentification" && !options.diarize) ||
+                (f.key === "steoraPunctuation" && !options.diarize) ||
+                (f.key === "steoraLlmPass" && !options.diarize)
               }
             />
             <div className="flex-1 min-w-0">
@@ -151,28 +177,6 @@ export function FeatureOptions({ options, onChange }: FeatureOptionsProps) {
               <p className="text-xs text-muted-foreground mt-0.5 leading-snug">
                 {f.description}
               </p>
-              {f.key === "utterances" && options.utterances && (
-                <div className="flex items-center gap-2 mt-2">
-                  <Label
-                    htmlFor="silenceThreshold"
-                    className="text-xs text-muted-foreground whitespace-nowrap"
-                  >
-                    Silence Threshold (s)
-                  </Label>
-                  <Input
-                    id="silenceThreshold"
-                    type="number"
-                    min={0.1}
-                    max={10}
-                    step={0.1}
-                    value={options.silenceThreshold}
-                    onChange={(e) =>
-                      set("silenceThreshold", parseFloat(e.target.value) || 0.8)
-                    }
-                    className="h-7 w-20 text-xs"
-                  />
-                </div>
-              )}
               {f.key === "speakerIdentification" && options.speakerIdentification && (
                 <div className="mt-2 space-y-1">
                   <Label

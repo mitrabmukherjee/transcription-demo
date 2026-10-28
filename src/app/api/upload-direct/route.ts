@@ -2,8 +2,10 @@ import { put } from "@vercel/blob";
 import { NextRequest, NextResponse } from "next/server";
 import {
   blobUploadPathname,
+  isAllowedMediaFile,
   MAX_UPLOAD_BYTES,
 } from "@/lib/blob-upload";
+import { publicApiErrorMessage } from "@/lib/client-errors";
 
 export const maxDuration = 300;
 
@@ -30,6 +32,13 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: "No file uploaded" }, { status: 400 });
   }
 
+  if (!isAllowedMediaFile(file)) {
+    return NextResponse.json(
+      { error: "Unsupported file type. Please upload audio or video." },
+      { status: 415 }
+    );
+  }
+
   if (
     file.size > MAX_UPLOAD_BYTES &&
     file.type.startsWith("video/")
@@ -43,10 +52,8 @@ export async function POST(req: NextRequest) {
     );
   }
 
-  const bytes =
-    file.size > MAX_UPLOAD_BYTES
-      ? file.slice(0, MAX_UPLOAD_BYTES)
-      : file;
+  const truncated = file.size > MAX_UPLOAD_BYTES;
+  const bytes = truncated ? file.slice(0, MAX_UPLOAD_BYTES) : file;
 
   try {
     const blob = await put(blobUploadPathname(file.name), bytes, {
@@ -55,11 +62,12 @@ export async function POST(req: NextRequest) {
       addRandomSuffix: true,
     });
 
-    return NextResponse.json({ url: blob.url });
+    return NextResponse.json({ url: blob.url, truncated });
   } catch (error: unknown) {
     console.error("[upload-direct]", error);
-    const message =
-      error instanceof Error ? error.message : "Server upload failed";
-    return NextResponse.json({ error: message }, { status: 500 });
+    return NextResponse.json(
+      { error: publicApiErrorMessage(error, "Server upload failed") },
+      { status: 500 }
+    );
   }
 }

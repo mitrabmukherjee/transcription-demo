@@ -2,6 +2,8 @@ import { NextRequest, NextResponse } from "next/server";
 import { AssemblyAI } from "assemblyai";
 import type { SubstitutionPolicy, PiiPolicy } from "assemblyai";
 import { del } from "@vercel/blob";
+import { isAllowedUploadBlobUrl } from "@/lib/blob-upload";
+import { publicApiErrorMessage } from "@/lib/client-errors";
 import { NormalizedResult, TranscriptionResponse, SpeakerSegment } from "@/lib/types";
 import {
   buildDiarizationPlainText,
@@ -36,15 +38,16 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: "No audioUrl provided" }, { status: 400 });
   }
 
+  if (!isAllowedUploadBlobUrl(audioUrl)) {
+    return NextResponse.json({ error: "Invalid or unauthorized audio URL" }, { status: 400 });
+  }
+
   const summarize = formData.get("summarize") === "true";
   const topics = formData.get("topics") === "true";
   const smartFormat = formData.get("smartFormat") === "true";
   const punctuation = formData.get("punctuation") === "true";
   const paragraphs = formData.get("paragraphs") === "true";
   const utterances = formData.get("utterances") === "true";
-  const silenceThreshold = parseFloat(
-    (formData.get("silenceThreshold") as string) || "0.8"
-  );
   const profanityFilter = formData.get("profanityFilter") === "true";
   const redact = formData.get("redact") === "true";
   const diarize = formData.get("diarize") === "true";
@@ -63,7 +66,6 @@ export async function POST(req: NextRequest) {
     punctuation,
     paragraphs,
     utterances,
-    silenceThreshold,
     profanityFilter,
     redact,
     diarize,
@@ -86,12 +88,17 @@ export async function POST(req: NextRequest) {
         { status: 504 }
       );
     }
-    return NextResponse.json({ error: message }, { status: 500 });
+    return NextResponse.json(
+      { error: publicApiErrorMessage(err, "Transcription failed. Please try again.") },
+      { status: 500 }
+    );
   } finally {
-    try {
-      await del(audioUrl);
-    } catch (delErr: unknown) {
-      console.warn("[transcribe] failed to delete blob:", delErr);
+    if (isAllowedUploadBlobUrl(audioUrl)) {
+      try {
+        await del(audioUrl);
+      } catch (delErr: unknown) {
+        console.warn("[transcribe] failed to delete blob:", delErr);
+      }
     }
   }
 }
@@ -103,7 +110,6 @@ interface ToggleOptions {
   punctuation: boolean;
   paragraphs: boolean;
   utterances: boolean;
-  silenceThreshold: number;
   profanityFilter: boolean;
   redact: boolean;
   diarize: boolean;
@@ -137,7 +143,10 @@ async function transcribeWithAssemblyAI(
 
   const effectiveSmartFormat = opts.verbatimMode ? false : opts.smartFormat;
   const effectiveFillerWords = opts.verbatimMode ? true : opts.fillerWords;
-  const useSpeakerId = opts.speakerIdentification && opts.diarize;
+  const wantsSteoraFormatting = opts.steoraPunctuation || opts.verbatimMode;
+  const enableDiarization =
+    opts.diarize || opts.utterances || wantsSteoraFormatting;
+  const useSpeakerId = opts.speakerIdentification && enableDiarization;
 
   const client = new AssemblyAI({ apiKey });
 
@@ -159,14 +168,13 @@ async function transcribeWithAssemblyAI(
     ...(opts.topics && { iab_categories: true }),
     ...(effectiveSmartFormat && { format_text: true }),
     ...(opts.punctuation && { punctuate: true }),
-    ...(opts.utterances && { speech_threshold: opts.silenceThreshold }),
     ...(opts.profanityFilter && { filter_profanity: true }),
     ...(opts.redact && {
       redact_pii: true,
       redact_pii_sub: "entity_name" as SubstitutionPolicy,
       redact_pii_policies: piiPolicies,
     }),
-    ...(opts.diarize && { speaker_labels: true }),
+    ...(enableDiarization && { speaker_labels: true }),
     ...(effectiveFillerWords && { disfluencies: true }),
     ...(useSpeakerId && { entity_detection: true }),
   });
@@ -230,7 +238,7 @@ async function transcribeWithAssemblyAI(
   const words = (transcript.words ?? []) as TranscriptWordLike[];
 
   if (
-    (opts.steoraPunctuation || opts.verbatimMode) &&
+    wantsSteoraFormatting &&
     utterancesList.length > 0 &&
     words.length > 0
   ) {
@@ -245,17 +253,14 @@ async function transcribeWithAssemblyAI(
     });
   }
 
-  if (
-    (opts.steoraPunctuation || opts.verbatimMode) &&
-    utterancesList.length > 0
-  ) {
+  if (wantsSteoraFormatting && utterancesList.length > 0) {
     utterancesList = applySteoraDialogueRules(utterancesList);
   }
 
   const openAiKey = process.env.OPENAI_API_KEY;
   const runLlm =
     opts.steoraLlmPass &&
-    (opts.steoraPunctuation || opts.verbatimMode) &&
+    wantsSteoraFormatting &&
     utterancesList.length > 0 &&
     openAiKey;
 
@@ -267,14 +272,15 @@ async function transcribeWithAssemblyAI(
     }
   }
 
-  const steoraDeliverable =
-    (opts.steoraPunctuation || opts.verbatimMode) &&
-    utterancesList.length > 0;
+  const steoraDeliverable = wantsSteoraFormatting && utterancesList.length > 0;
+
+  const transcriptFromUtterances =
+    utterancesList.length > 0 && (useSpeakerId || steoraDeliverable);
 
   let paragraphsList: string[] = [];
-  if (steoraDeliverable) {
+  if (transcriptFromUtterances && opts.paragraphs) {
     paragraphsList = steoraParagraphsFromUtterances(utterancesList);
-  } else if (opts.paragraphs && transcript.id) {
+  } else if (!steoraDeliverable && opts.paragraphs && transcript.id) {
     try {
       const paraResponse = await client.transcripts.paragraphs(transcript.id);
       paragraphsList = (paraResponse.paragraphs ?? [])
@@ -307,10 +313,7 @@ async function transcribeWithAssemblyAI(
   }
 
   let transcriptText = transcript.text || "";
-  if (
-    utterancesList.length > 0 &&
-    (useSpeakerId || steoraDeliverable)
-  ) {
+  if (transcriptFromUtterances) {
     transcriptText = buildDiarizationPlainText(utterancesList);
   }
 

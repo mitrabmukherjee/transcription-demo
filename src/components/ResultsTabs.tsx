@@ -27,6 +27,22 @@ import {
   packSteoraDocx,
 } from "@/lib/steoraDocumentFormat";
 
+function stripFillerWords(text: string): string {
+  return text
+    .replace(/\b(uh|um|uh-huh|mm-hmm|hmm)\b/gi, "")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function applyFillerPolicy(
+  text: string,
+  showFillers: boolean,
+  verbatim: boolean
+): string {
+  if (showFillers || verbatim) return text;
+  return stripFillerWords(text);
+}
+
 function formatTime(secs: number) {
   const m = Math.floor(secs / 60);
   const s = Math.floor(secs % 60);
@@ -57,27 +73,28 @@ export function ResultsTabs({ result }: ResultsTabsProps) {
 
   const verbatim = normalized.meta?.verbatimMode ?? false;
 
-  const transcriptText =
-    showFillers || verbatim
-      ? normalized.transcript
-      : normalized.transcript
-          .replace(/\b(uh|um|uh-huh|mm-hmm|hmm)\b/gi, "")
-          .replace(/\s+/g, " ")
-          .trim();
-
-  const displayParagraphs =
+  const baseParagraphs =
     normalized.paragraphs.length > 0
       ? normalized.paragraphs
-      : [transcriptText];
+      : [normalized.transcript];
+
+  const displayParagraphs = baseParagraphs
+    .map((p) => applyFillerPolicy(p, showFillers, verbatim))
+    .filter(Boolean);
+
+  const displayUtterances = normalized.utterances.map((u) => ({
+    ...u,
+    text: applyFillerPolicy(u.text, showFillers, verbatim),
+  }));
 
   const handleCopy = async (type: "transcript" | "diarization") => {
     try {
       let plainText = "";
       let htmlText = "";
 
-      if (type === "diarization" && normalized.utterances.length > 0) {
-        plainText = buildDiarizationPlainText(normalized.utterances);
-        htmlText = buildDiarizationHtml(normalized.utterances);
+      if (type === "diarization" && displayUtterances.length > 0) {
+        plainText = buildDiarizationPlainText(displayUtterances);
+        htmlText = buildDiarizationHtml(displayUtterances);
       } else {
         plainText = buildTranscriptPlainText(displayParagraphs);
         htmlText = buildTranscriptHtml(displayParagraphs);
@@ -99,8 +116,8 @@ export function ResultsTabs({ result }: ResultsTabsProps) {
   const handleDownload = async (type: "transcript" | "diarization") => {
     try {
       const paragraphs =
-        type === "diarization" && normalized.utterances.length > 0
-          ? buildDiarizationDocxParagraphs(normalized.utterances)
+        type === "diarization" && displayUtterances.length > 0
+          ? buildDiarizationDocxParagraphs(displayUtterances)
           : buildTranscriptDocxParagraphs(displayParagraphs);
 
       const blob = await packSteoraDocx(paragraphs);
@@ -219,10 +236,10 @@ export function ResultsTabs({ result }: ResultsTabsProps) {
             </div>
           </CardHeader>
           <CardContent>
-            {normalized.utterances.length > 0 ? (
+            {displayUtterances.length > 0 ? (
               diarizationTimelineView ? (
                 <div className="space-y-2">
-                  {normalized.utterances.map((u, i) => (
+                  {displayUtterances.map((u, i) => (
                     <div
                       key={i}
                       className="flex gap-3 rounded-lg p-3 border hover:bg-muted/30 transition-colors"
@@ -245,7 +262,7 @@ export function ResultsTabs({ result }: ResultsTabsProps) {
                 </div>
               ) : (
                 <div className="steora-draft">
-                  {normalized.utterances.map((u, i) => (
+                  {displayUtterances.map((u, i) => (
                     <p key={i}>{`${u.speaker}: ${u.text}`}</p>
                   ))}
                 </div>

@@ -19,7 +19,6 @@ const DEFAULT_OPTIONS: TranscriptionOptions = {
   punctuation: true,
   paragraphs: false,
   utterances: false,
-  silenceThreshold: 0.8,
   profanityFilter: false,
   redact: false,
   diarize: false,
@@ -66,7 +65,16 @@ export default function MainWorkspace({ blobUploadMode }: MainWorkspaceProps) {
     }, 3500);
 
     try {
-      const audioUrl = await uploadMediaFile(file, blobUploadMode);
+      const { url: audioUrl, truncated: uploadTruncated } = await uploadMediaFile(
+        file,
+        blobUploadMode
+      );
+
+      if (uploadTruncated) {
+        toast.warning("Upload truncated", {
+          description: "Only the first 500 MB was uploaded for transcription.",
+        });
+      }
 
       setStatusIndex(1);
 
@@ -78,7 +86,6 @@ export default function MainWorkspace({ blobUploadMode }: MainWorkspaceProps) {
       fd.append("punctuation", String(options.punctuation));
       fd.append("paragraphs", String(options.paragraphs));
       fd.append("utterances", String(options.utterances));
-      fd.append("silenceThreshold", String(options.silenceThreshold));
       fd.append("profanityFilter", String(options.profanityFilter));
       fd.append("redact", String(options.redact));
       fd.append("diarize", String(options.diarize));

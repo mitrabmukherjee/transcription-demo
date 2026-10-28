@@ -4,8 +4,8 @@ export interface TranscriptionOptions {
   smartFormat: boolean;
   punctuation: boolean;
   paragraphs: boolean;
+  /** Request turn-by-turn utterances (AssemblyAI requires speaker diarization). */
   utterances: boolean;
-  silenceThreshold: number;
   profanityFilter: boolean;
   redact: boolean;
   diarize: boolean;
