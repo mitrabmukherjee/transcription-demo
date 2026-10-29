@@ -3,6 +3,7 @@
 import { Switch } from "@/components/ui/switch";
 import { Label } from "@/components/ui/label";
 import { Input } from "@/components/ui/input";
+import { applyVerbatimPreset } from "@/lib/transcription-options";
 import { TranscriptionOptions } from "@/lib/types";
 
 interface FeatureOptionsProps {
@@ -94,19 +95,6 @@ const features: FeatureDef[] = [
     description: 'Keep disfluencies like "uh" and "um" (auto-enabled in verbatim mode).',
   },
 ];
-
-function applyVerbatimPreset(options: TranscriptionOptions): TranscriptionOptions {
-  return {
-    ...options,
-    smartFormat: false,
-    fillerWords: true,
-    diarize: true,
-    utterances: true,
-    punctuation: true,
-    speakerIdentification: true,
-    steoraPunctuation: true,
-  };
-}
 
 export function FeatureOptions({ options, onChange }: FeatureOptionsProps) {
   const set = (key: keyof TranscriptionOptions, value: boolean | number | string) => {

@@ -329,6 +329,7 @@ async function transcribeWithAssemblyAI(
       speakerIdentification: useSpeakerId,
       steoraPunctuation: opts.steoraPunctuation || opts.verbatimMode,
       steoraLlmPass: Boolean(runLlm),
+      redact: opts.redact,
     },
   };
 

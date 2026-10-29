@@ -27,6 +27,7 @@ export interface TranscriptionMeta {
   speakerIdentification: boolean;
   steoraPunctuation: boolean;
   steoraLlmPass: boolean;
+  redact: boolean;
 }
 
 export interface SpeakerSegment {

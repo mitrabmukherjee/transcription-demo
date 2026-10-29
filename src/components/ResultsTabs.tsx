@@ -13,7 +13,10 @@ import {
 } from "@/components/ui/card";
 import { Switch } from "@/components/ui/switch";
 import { Label } from "@/components/ui/label";
-import { TranscriptionResponse } from "@/lib/types";
+import type { TranscriptionResponse } from "@/lib/types";
+import { getSpeakerColorClass } from "@/lib/speaker-display";
+import { rawPayloadForDisplay } from "@/lib/sanitize-raw-payload";
+import { resolveTranscriptParagraphs } from "@/lib/transcript-display";
 import { AlertTriangle, FileText, Mic2, Brain, Code2, Copy, Download } from "lucide-react";
 import { toast } from "sonner";
 import { saveAs } from "file-saver";
@@ -49,19 +52,6 @@ function formatTime(secs: number) {
   return `${m}:${s.toString().padStart(2, "0")}`;
 }
 
-const SPEAKER_COLORS = [
-  "bg-blue-100 text-blue-800 dark:bg-blue-900/40 dark:text-blue-300",
-  "bg-purple-100 text-purple-800 dark:bg-purple-900/40 dark:text-purple-300",
-  "bg-emerald-100 text-emerald-800 dark:bg-emerald-900/40 dark:text-emerald-300",
-  "bg-orange-100 text-orange-800 dark:bg-orange-900/40 dark:text-orange-300",
-  "bg-pink-100 text-pink-800 dark:bg-pink-900/40 dark:text-pink-300",
-];
-
-function getSpeakerColor(speaker: string) {
-  const num = parseInt(speaker.replace(/\D/g, "")) || 0;
-  return SPEAKER_COLORS[num % SPEAKER_COLORS.length];
-}
-
 interface ResultsTabsProps {
   result: TranscriptionResponse;
 }
@@ -73,10 +63,12 @@ export function ResultsTabs({ result }: ResultsTabsProps) {
 
   const verbatim = normalized.meta?.verbatimMode ?? false;
 
-  const baseParagraphs =
-    normalized.paragraphs.length > 0
-      ? normalized.paragraphs
-      : [normalized.transcript];
+  const rawDisplay = rawPayloadForDisplay(result.raw, {
+    redactEnabled: normalized.meta?.redact ?? false,
+    redactedTranscript: normalized.transcript,
+  });
+
+  const baseParagraphs = resolveTranscriptParagraphs(normalized);
 
   const displayParagraphs = baseParagraphs
     .map((p) => applyFillerPolicy(p, showFillers, verbatim))
@@ -245,7 +237,7 @@ export function ResultsTabs({ result }: ResultsTabsProps) {
                       className="flex gap-3 rounded-lg p-3 border hover:bg-muted/30 transition-colors"
                     >
                       <span
-                        className={`text-xs font-semibold px-2 py-0.5 rounded-full h-fit whitespace-nowrap mt-0.5 ${getSpeakerColor(
+                        className={`text-xs font-semibold px-2 py-0.5 rounded-full h-fit whitespace-nowrap mt-0.5 ${getSpeakerColorClass(
                           u.speaker
                         )}`}
                       >
@@ -354,7 +346,9 @@ export function ResultsTabs({ result }: ResultsTabsProps) {
           <CardHeader className="pb-3">
             <CardTitle className="text-base">Raw JSON Payload</CardTitle>
             <CardDescription>
-              Full AssemblyAI response object
+              {normalized.meta?.redact
+                ? "Redacted view — word-level text omitted; use Transcript for redacted content."
+                : "Full AssemblyAI response object"}
             </CardDescription>
           </CardHeader>
           <CardContent className="min-w-0">
@@ -362,7 +356,7 @@ export function ResultsTabs({ result }: ResultsTabsProps) {
               className="min-w-0 max-w-full overflow-auto rounded-lg border bg-muted/40 max-h-[min(32rem,60vh)]"
             >
               <pre className="min-w-0 p-4 text-xs leading-relaxed font-mono text-foreground whitespace-pre-wrap break-words">
-                {JSON.stringify(result.raw, null, 2)}
+                {JSON.stringify(rawDisplay, null, 2)}
               </pre>
             </div>
           </CardContent>

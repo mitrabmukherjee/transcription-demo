@@ -9,26 +9,11 @@ import { ResultsTabs } from "@/components/ResultsTabs";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { TranscriptionOptions, TranscriptionResponse } from "@/lib/types";
+import { createDefaultTranscriptionOptions } from "@/lib/transcription-options";
 import type { BlobUploadMode } from "@/lib/upload-media";
 import { uploadMediaFile } from "@/lib/upload-media";
 
-const DEFAULT_OPTIONS: TranscriptionOptions = {
-  summarize: false,
-  topics: false,
-  smartFormat: true,
-  punctuation: true,
-  paragraphs: false,
-  utterances: false,
-  profanityFilter: false,
-  redact: false,
-  diarize: false,
-  fillerWords: false,
-  verbatimMode: true,
-  speakerIdentification: true,
-  steoraPunctuation: true,
-  steoraLlmPass: false,
-  knownSpeakerNames: "",
-};
+const DEFAULT_OPTIONS = createDefaultTranscriptionOptions();
 
 const STATUS_MESSAGES = [
   "Uploading media...",

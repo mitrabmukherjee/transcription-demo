@@ -3,21 +3,14 @@
 import { useCallback, useRef, useState } from "react";
 import { UploadCloud, X, FileAudio, FileVideo } from "lucide-react";
 import { Button } from "@/components/ui/button";
+import {
+  MAX_UPLOAD_BYTES,
+  UPLOAD_MEDIA_EXTENSIONS,
+  UPLOAD_MEDIA_MIME_TYPES,
+} from "@/lib/blob-upload";
 
-const ACCEPTED_TYPES = [
-  "audio/mp3",
-  "audio/mpeg",
-  "audio/wav",
-  "audio/x-wav",
-  "audio/m4a",
-  "audio/mp4",
-  "audio/webm",
-  "video/mp4",
-  "video/quicktime",
-  "video/webm",
-];
-
-const ACCEPTED_EXTENSIONS = [".mp4", ".mov", ".mp3", ".wav", ".m4a", ".webm"];
+const UPLOAD_MIME_LIST = UPLOAD_MEDIA_MIME_TYPES as readonly string[];
+const UPLOAD_EXT_LIST = UPLOAD_MEDIA_EXTENSIONS as readonly string[];
 
 function formatBytes(bytes: number) {
   if (bytes === 0) return "0 B";
@@ -52,7 +45,7 @@ export function FileUploader({ onFileChange }: FileUploaderProps) {
       setError(null);
       setTruncated(false);
 
-      const MAX = 500 * 1024 * 1024;
+      const MAX = MAX_UPLOAD_BYTES;
       const isVideo = f.type.startsWith("video/");
 
       if (f.size > MAX && isVideo) {
@@ -71,8 +64,8 @@ export function FileUploader({ onFileChange }: FileUploaderProps) {
       }
 
       const ext = "." + processedFile.name.split(".").pop()?.toLowerCase();
-      const validMime = ACCEPTED_TYPES.includes(processedFile.type);
-      const validExt = ACCEPTED_EXTENSIONS.includes(ext);
+      const validMime = UPLOAD_MIME_LIST.includes(processedFile.type);
+      const validExt = UPLOAD_EXT_LIST.includes(ext);
 
       if (!validMime && !validExt) {
         setError("Unsupported file type. Please upload audio or video.");
@@ -166,7 +159,7 @@ export function FileUploader({ onFileChange }: FileUploaderProps) {
             ref={inputRef}
             type="file"
             className="hidden"
-            accept={ACCEPTED_EXTENSIONS.join(",")}
+            accept={UPLOAD_MEDIA_EXTENSIONS.join(",")}
             onChange={handleInputChange}
           />
         </div>
